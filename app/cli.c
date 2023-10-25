@@ -69,6 +69,7 @@ ZSV_MAIN_DECL(compare);
 ZSV_MAIN_DECL(echo);
 ZSV_MAIN_NO_OPTIONS_DECL(prop);
 ZSV_MAIN_NO_OPTIONS_DECL(rm);
+ZSV_MAIN_NO_OPTIONS_DECL(mv);
 
 #ifdef USE_JQ
 ZSV_MAIN_NO_OPTIONS_DECL(jq);
@@ -99,7 +100,8 @@ struct builtin_cmd builtin_cmds[] = {
   CLI_BUILTIN_COMMAND(compare),
   CLI_BUILTIN_COMMAND(echo),
   CLI_BUILTIN_NO_OPTIONS_COMMAND(prop),
-  CLI_BUILTIN_NO_OPTIONS_COMMAND(rm)
+  CLI_BUILTIN_NO_OPTIONS_COMMAND(rm),
+  CLI_BUILTIN_NO_OPTIONS_COMMAND(mv)
 #ifdef USE_JQ
   , CLI_BUILTIN_NO_OPTIONS_COMMAND(jq)
 #endif
@@ -474,7 +476,12 @@ int ZSV_CLI_MAIN(int argc, const char *argv[]) {
           argv[2],
           "--help"
         };
-        return help_builtin->main(2, argv_tmp);
+        if(help_builtin->main)
+          return help_builtin->main(2, argv_tmp);
+        else if(help_builtin->cmd)
+          return help_builtin->cmd(2, argv_tmp, NULL, NULL);
+        else
+          return fprintf(stderr, "Unexpected syntax!\n");
       } else {
         const char *ext_cmd = extension_cmd_from_arg(argv[2]);
         if(ext_cmd) {

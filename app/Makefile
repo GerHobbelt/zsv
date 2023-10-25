@@ -37,6 +37,13 @@ ifneq ($(ZSV_CACHE_PREFIX),)
   CFLAGS+= -DZSV_CACHE_PREFIX='${ZSV_CACHE_PREFIX}'
 endif
 
+ifneq ($(ZSV_IS_PROP_FILE_HANDLER),)
+	CFLAGS+=-DZSV_IS_PROP_FILE_HANDLER=${ZSV_IS_PROP_FILE_HANDLER}
+endif
+ifneq ($(ZSV_IS_PROP_FILE_DEPTH),)
+	CFLAGS+=-DZSV_IS_PROP_FILE_DEPTH=${ZSV_IS_PROP_FILE_DEPTH}
+endif
+
 DEBUG=0
 WIN=
 ifeq ($(WIN),)
@@ -163,8 +170,8 @@ endif
 
 ZSV=$(BINDIR)/zsv${EXE}
 
-SOURCES= echo count count-pull select select-pull 2tsv 2json serialize flatten pretty stack desc sql 2db compare prop rm jq
-CLI_SOURCES=echo select desc count 2tsv pretty sql flatten 2json serialize stack 2db compare prop rm jq
+SOURCES= echo count count-pull select select-pull 2tsv 2json serialize flatten pretty stack desc sql 2db compare prop rm mv jq
+CLI_SOURCES=echo select desc count 2tsv pretty sql flatten 2json serialize stack 2db compare prop rm mv jq
 
 CFLAGS+= -DUSE_JQ
 
@@ -255,7 +262,7 @@ help:
 	@echo "which will build and test all apps, or to build/test a single app:"
 	@echo "  ${MAKE} test-xx"
 	@echo "where xx is any of:"
-	@echo "  echo count count-pull select select-pull 2tsv 2json serialize flatten pretty stack desc sql 2db prop rm"
+	@echo "  echo count count-pull select select-pull 2tsv 2json serialize flatten pretty stack desc sql 2db prop rm mv"
 	@echo ""
 
 install: ${ZSV}
@@ -408,8 +415,13 @@ ${YAJL_HELPER_OBJ}: external/yajl_helper/yajl_helper.c
 	@mkdir -p `dirname "$@"`
 	${CC} ${CFLAGS} -I${BASEDIR}/yajl_helper ${YAJL_INCLUDE} ${YAJL_HELPER_INCLUDE} -c $< -o $@
 
-test:
-	@${MAKE} -C test $@ QUIET=1 LEAKS=${LEAKS} CONFIGFILE=${CONFIGFILEPATH} DEBUG=${DEBUG}
+test:	test-standalone test-cli
+
+test-standalone:
+	@${MAKE} -C test test QUIET=1 LEAKS=${LEAKS} CONFIGFILE=${CONFIGFILEPATH} DEBUG=${DEBUG}
+
+test-cli:  ${CLI}
+	@${MAKE} -C test $@ QUIET=1 LEAKS=${LEAKS} CONFIGFILE=${CONFIGFILEPATH} DEBUG=${DEBUG} CLI=${CLI}
 
 clean-all: clean clean-external clean-obj clean-lib
 

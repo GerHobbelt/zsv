@@ -48,7 +48,7 @@ TEST_DATA_DIR=${THIS_LIB_BASE}/data
 SOURCES= echo count count-pull select select-pull sql 2json serialize flatten pretty desc stack 2db 2tsv jq compare
 TARGETS=$(addprefix ${BUILD_DIR}/bin/zsv_,$(addsuffix ${EXE},${SOURCES}))
 
-TESTS=test-blank-leading-rows $(addprefix test-,${SOURCES})
+TESTS=test-blank-leading-rows $(addprefix test-,${SOURCES}) test-rm test-mv
 
 COLOR_NONE=\033[0m
 COLOR_GREEN=\033[1;32m
@@ -125,6 +125,12 @@ worldcitiespop_mil.csv:
 	curl -LOk 'https://burntsushi.net/stuff/worldcitiespop_mil.csv'
 
 test-count test-count-pull: test-% : test-1-% test-2-%
+
+test-cli: ${CLI}
+	@${TEST_INIT}
+	@[ "${CLI}" = "" ] && echo 1>&2 'test-cli: missing CLI env var' && exit 1 || exit 0 
+	@$< help select 2>&1 > ${TMP_DIR}/$@.out
+	@[ "`head -1 ${TMP_DIR}/$@.out`" = "select: streaming CSV parser" ] && [ $$(( `cat ${TMP_DIR}/$@.out | wc -l` )) = "35" ] && ${TEST_PASS} || ${TEST_FAIL}
 
 test-1-count test-1-count-pull: test-1-% : ${BUILD_DIR}/bin/zsv_%${EXE} worldcitiespop_mil.csv
 	@${TEST_INIT}
@@ -223,6 +229,23 @@ test-fixed-4-select test-fixed-4-select-pull: ${BUILD_DIR}/bin/zsv_select${EXE}
 	@${PREFIX} $< ${TEST_DATA_DIR}/fixed-auto3.txt --fixed-auto ${REDIRECT} ${TMP_DIR}/$@.out
 	@${CMP} ${TMP_DIR}/$@.out expected/test-fixed-4-select.out && ${TEST_PASS} || ${TEST_FAIL}
 
+test-rm: ${BUILD_DIR}/bin/zsv_prop${EXE} ${BUILD_DIR}/bin/zsv_rm${EXE}
+	@${TEST_INIT}
+	@echo 'hi' > ${TMP_DIR}/$@.csv
+	@${PREFIX} ${BUILD_DIR}/bin/zsv_prop${EXE} ${TMP_DIR}/$@.csv -R 1 -d 2 ${REDIRECT} /dev/null
+	@find ${TMP_DIR}/.zsv/data/$@.csv/props.json -type f >/dev/null
+	@${PREFIX} ${BUILD_DIR}/bin/zsv_rm${EXE} ${TMP_DIR}/$@.csv -f ${REDIRECT} /dev/null
+	@find ${TMP_DIR}/.zsv/data/$@.csv/props.json -type f 2>/dev/null && ${TEST_FAIL} || ${TEST_PASS}
+
+test-mv: ${BUILD_DIR}/bin/zsv_prop${EXE} ${BUILD_DIR}/bin/zsv_mv${EXE}
+	@${TEST_INIT}
+	@echo 'hi' > ${TMP_DIR}/$@.csv
+	@rm -rf ${TMP_DIR}/.zsv/data/$@.csv ${TMP_DIR}/.zsv/data/$@-moved.csv ${TMP_DIR}/$@-moved.csv
+	@${PREFIX} ${BUILD_DIR}/bin/zsv_prop${EXE} ${TMP_DIR}/$@.csv -R 1 -d 2 ${REDIRECT} /dev/null
+	@find ${TMP_DIR}/.zsv/data/$@.csv/props.json -type f >/dev/null
+	@${PREFIX} ${BUILD_DIR}/bin/zsv_mv${EXE} ${TMP_DIR}/$@.csv ${TMP_DIR}/$@-moved.csv ${REDIRECT} /dev/null
+	@find ${TMP_DIR}/.zsv/data/$@-moved.csv/props.json -type f >/dev/null && ${TEST_PASS} || ${TEST_FAIL}
+
 
 test-blank-leading-rows: test-blank-leading-rows-1 test-blank-leading-rows-2 test-blank-leading-rows-3 test-blank-leading-rows-4
 
@@ -258,10 +281,23 @@ test-stack2: ${BUILD_DIR}/bin/zsv_stack${EXE}
 	@${PREFIX} $< ${TEST_DATA_DIR}/stack2-[12].csv ${REDIRECT} ${TMP_DIR}/$@.out
 	@${CMP} ${TMP_DIR}/$@.out expected/$@.out && ${TEST_PASS} || ${TEST_FAIL}
 
-test-sql test-flatten test-pretty : test-%: ${BUILD_DIR}/bin/zsv_%${EXE}
+test-sql test-flatten : test-%: ${BUILD_DIR}/bin/zsv_%${EXE}
 	@${TEST_INIT}
 	@( ( ! [ -s "${TEST_DATA_DIR}/test/$*.csv" ] ) && echo "No test input for $*") || \
 	(${PREFIX} $< ${ARGS-$*} < ${TEST_DATA_DIR}/test/$*.csv ${REDIRECT1} ${TMP_DIR}/$@.out && \
+	${CMP} ${TMP_DIR}/$@.out expected/$@.out && ${TEST_PASS} || ${TEST_FAIL})
+
+test-pretty: test-pretty-1 test-pretty-escape-chars
+
+test-pretty-1 : test-%-1: ${BUILD_DIR}/bin/zsv_%${EXE}
+	@${TEST_INIT}
+	@( ( ! [ -s "${TEST_DATA_DIR}/test/$*.csv" ] ) && echo "No test input for $*") || \
+	(${PREFIX} $< ${ARGS-$*} < ${TEST_DATA_DIR}/test/$*.csv ${REDIRECT1} ${TMP_DIR}/$@.out && \
+	${CMP} ${TMP_DIR}/$@.out expected/$@.out && ${TEST_PASS} || ${TEST_FAIL})
+
+test-pretty-escape-chars: ${BUILD_DIR}/bin/zsv_pretty${EXE}
+	@${TEST_INIT}
+	@(${PREFIX} $< ${ARGS-$*} < ${TEST_DATA_DIR}/test/pretty-escape.csv -M ${REDIRECT1} ${TMP_DIR}/$@.out && \
 	${CMP} ${TMP_DIR}/$@.out expected/$@.out && ${TEST_PASS} || ${TEST_FAIL})
 
 test-2tsv: test-2tsv-1 test-2tsv-2
