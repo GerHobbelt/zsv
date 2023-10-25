@@ -76,6 +76,8 @@ static struct zsv_desc_unique_key *zsv_desc_unique_key_new(const unsigned char *
 }
 
 static void zsv_desc_unique_key_delete(zsv_desc_unique_key *e) {
+  if(e)
+    free(e->value);
   free(e);
 }
 
@@ -460,7 +462,7 @@ const char *zsv_desc_usage_msg[] =
 
 static int zsv_desc_usage() {
   for(int i = 0; zsv_desc_usage_msg[i]; i++)
-    fprintf(stderr, "%s\n", zsv_desc_usage_msg[i]);
+    fprintf(stdout, "%s\n", zsv_desc_usage_msg[i]);
   return 0;
 }
 
