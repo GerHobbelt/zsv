@@ -93,8 +93,19 @@ else
 endif
 
 CFLAGS+= -std=gnu11
+CFLAGS_O ?=
+ifeq ($(CFLAGS_O),)
+  ifeq ($(DEBUG),0)
+    CFLAGS_O=-O3
+  else
+    CFLAGS_O=-O0
+  endif
+endif
+
+CFLAGS+=${CFLAGS_O}
+
 ifeq ($(DEBUG),0)
-  CFLAGS+= -O3 -DNDEBUG -Wno-gnu-statement-expression -Wshadow -Wall -Wextra -Wno-missing-braces -pedantic -DSTDC_HEADERS -D_GNU_SOURCE -ftree-vectorize ${CFLAGS_OPT}
+  CFLAGS+=-DNDEBUG -Wno-gnu-statement-expression -Wshadow -Wall -Wextra -Wno-missing-braces -pedantic -DSTDC_HEADERS -D_GNU_SOURCE ${CFLAGS_OPT} #-ftree-vectorize
 
   ifeq ($(PGO),1)
     CFLAGS+= -fprofile-generate -fprofile-dir=/tmp/p4
@@ -233,7 +244,7 @@ MORE_SOURCE+= ${YAJL_INCLUDE} ${YAJL_HELPER_INCLUDE} -I${JQ_INCLUDE_DIR}
 MORE_LIBS+=${JQ_LIB} ${LDFLAGS_JQ}
 
 help:
-	@echo "To build: ${MAKE} [DEBUG=1] [clean] [BINDIR=${BINDIR}] [JQ_PREFIX=/usr/local] <install|all|test>"
+	@echo "To build: ${MAKE} [DEBUG=1] [clean] [clean-all] [BINDIR=${BINDIR}] [JQ_PREFIX=/usr/local] <install|all|test>"
 	@echo
 	@echo "If JQ_PREFIX is not defined, libjq will be built in the build dir"
 	@echo
@@ -327,9 +338,7 @@ ${SQLITE_EXT}: ${SQLITE_SRC}
 ${JQ_SRC}: ${JQ_TARBALL}
 	@rm -rf $@-tmp
 	@mkdir -p $@-tmp
-	cd $@-tmp && tar xf ${JQ_TARBALL} \
-#	&& cp -p ${THIS_MAKEFILE_DIR}/external/jq.diff ./ \
-#	&& git apply jq.diff || (echo "Failed! ls $@-tmp/* output: " && ls $@-tmp/* && exit 1)
+	cd $@-tmp && tar xf ${JQ_TARBALL}
 	mv $@-tmp/jq-1.6 $@
 	rm -rf $@-tmp
 
