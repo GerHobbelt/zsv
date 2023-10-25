@@ -15,7 +15,6 @@
 #include <inttypes.h>
 #include <limits.h>
 #include <errno.h>
-#include <yajl_helper.h>
 #include <unistd.h> // unlink, access
 
 #define ZSV_COMMAND_NO_OPTIONS
@@ -37,12 +36,13 @@ const char *zsv_property_usage_msg[] = {
   "Usage: " APPNAME " <filepath> [options]",
   "  where filepath is the path to the input CSV file, or",
   "    when using --auto: input CSV file or - for stdin",
-  "    when using --clean: directory to clean from (. for current directory)",
+  "    when using --clean: directory to clean from (use '.' for current directory)",
   "  and options may be one or more of:",
   "    -d,--header-row-span <value>: set/unset/auto-detect header depth (see below)",
   "    -R,--skip-head <value>      : set/unset/auto-detect initial rows to skip (see below)",
   "    --list-files                : list all property sets associted with the given file", // output a list of all cache files
-  "    --clear                     : delete all properties of given files",
+  "    --clear                     : delete all properties of the specified file",
+  // TO DO: --clear-file relative-path
   "    --clean                     : delete all files / dirs in the property cache of the given directory",
   "                                  that do not have a corresponding file in that directory",
   "      --dry                     : dry run, outputs files/dirs to remove. only for use with --clean",
@@ -80,6 +80,8 @@ static int zsv_property_usage(FILE *target) {
 
 static int show_all_properties(const unsigned char *filepath) {
   int err = 0;
+  // to do: show all files, not just prop file
+
   if(!zsv_file_readable((const char *)filepath, &err, NULL)) {
     perror((const char *)filepath);
     return err;
@@ -512,7 +514,8 @@ enum zsv_prop_mode {
   zsv_prop_mode_clean = 'K',
   zsv_prop_mode_export = 'e',
   zsv_prop_mode_import = 'i',
-  zsv_prop_mode_copy = 'c'
+  zsv_prop_mode_copy = 'c',
+  zsv_prop_mode_clear = 'r'
 };
 
 static enum zsv_prop_mode zsv_prop_get_mode(const char *opt) {
@@ -521,6 +524,7 @@ static enum zsv_prop_mode zsv_prop_get_mode(const char *opt) {
   if(!strcmp(opt, "--copy")) return zsv_prop_mode_copy;
   if(!strcmp(opt, "--export")) return zsv_prop_mode_export;
   if(!strcmp(opt, "--import")) return zsv_prop_mode_import;
+  if(!strcmp(opt, "--clear")) return zsv_prop_mode_clear;
   return zsv_prop_mode_default;
 }
 
@@ -560,26 +564,21 @@ int zsv_is_prop_file(struct zsv_foreach_dirent_handle *h, size_t depth) {
   return depth == 1 && !strcmp(h->entry, "props.json");
 }
 
-struct is_property_ctx {
-  zsv_foreach_dirent_handler handler;
-  size_t max_depth;
-};
-
 #ifdef ZSV_IS_PROP_FILE_HANDLER
 int ZSV_IS_PROP_FILE_HANDLER(struct zsv_foreach_dirent_handle *, size_t);
 #endif
 
-struct is_property_ctx *
+struct zsv_dir_filter *
 zsv_prop_get_or_set_is_prop_file(
                                  int (*custom_is_prop_file)(struct zsv_foreach_dirent_handle *, size_t),
                                  int max_depth,
                                  char set
                                  ) {
-  static struct is_property_ctx ctx = {
+  static struct zsv_dir_filter ctx = {
 #ifndef ZSV_IS_PROP_FILE_HANDLER
-    .handler = zsv_is_prop_file,
+    .filter = zsv_is_prop_file,
 #else
-    .handler = ZSV_IS_PROP_FILE_HANDLER,
+    .filter = ZSV_IS_PROP_FILE_HANDLER,
 #endif
 #ifndef ZSV_IS_PROP_FILE_DEPTH
     .max_depth = 1
@@ -589,8 +588,8 @@ zsv_prop_get_or_set_is_prop_file(
   };
 
   if(set) {
-    if(!(ctx.handler = custom_is_prop_file)) {
-      ctx.handler = zsv_is_prop_file;
+    if(!(ctx.filter = custom_is_prop_file)) {
+      ctx.filter = zsv_is_prop_file;
       max_depth = 1;
     } else
       ctx.max_depth = max_depth;
@@ -600,9 +599,11 @@ zsv_prop_get_or_set_is_prop_file(
 
 static int zsv_prop_foreach_list(struct zsv_foreach_dirent_handle *h, size_t depth) {
   if(!h->is_dir) {
-    struct is_property_ctx *ctx = (struct is_property_ctx *)h->ctx;
-    if(ctx->handler(h, depth))
+    struct zsv_dir_filter *ctx = (struct zsv_dir_filter *)h->ctx;
+    h->ctx = ctx->ctx;
+    if(ctx->filter(h, depth))
       printf("%s\n", h->entry);
+    h->ctx = ctx;
   }
   return 0;
 }
@@ -621,7 +622,7 @@ zsv_prop_get_or_set_is_prop_dir(
 static int zsv_prop_execute_list_files(const unsigned char *filepath, char verbose) {
   int err = 0;
   unsigned char *cache_path = zsv_cache_path(filepath, NULL, 0);
-  struct is_property_ctx ctx = *zsv_prop_get_or_set_is_prop_file(NULL, 0, 0);
+  struct zsv_dir_filter ctx = *zsv_prop_get_or_set_is_prop_file(NULL, 0, 0);
   if(cache_path) {
     zsv_foreach_dirent((const char *)cache_path, ctx.max_depth, zsv_prop_foreach_list,
                        &ctx, verbose);
@@ -676,7 +677,7 @@ enum zsv_prop_foreach_copy_mode {
 };
 
 struct zsv_prop_foreach_copy_ctx {
-  struct is_property_ctx is_property_ctx;
+  struct zsv_dir_filter zsv_dir_filter;
   const unsigned char *src_cache_dir;
   const unsigned char *dest_cache_dir;
   enum zsv_prop_foreach_copy_mode mode;
@@ -690,7 +691,8 @@ struct zsv_prop_foreach_copy_ctx {
 static int zsv_prop_foreach_copy(struct zsv_foreach_dirent_handle *h, size_t depth) {
   if(!h->is_dir) {
     struct zsv_prop_foreach_copy_ctx *ctx = h->ctx;
-    if(ctx->is_property_ctx.handler(h, depth)) {
+    h->ctx = ctx->zsv_dir_filter.ctx;
+    if(ctx->zsv_dir_filter.filter(h, depth)) {
       char *dest_prop_filepath;
       asprintf(&dest_prop_filepath, "%s%s", ctx->dest_cache_dir, h->parent_and_entry + strlen((const char *)ctx->src_cache_dir));
       if(!dest_prop_filepath) {
@@ -744,74 +746,7 @@ static int zsv_prop_foreach_copy(struct zsv_foreach_dirent_handle *h, size_t dep
         free(dest_prop_filepath);
       }
     }
-  }
-  return 0;
-}
-
-struct zsv_prop_foreach_export_ctx {
-  struct is_property_ctx is_property_ctx;
-  const unsigned char *src_cache_dir;
-  struct jv_to_json_ctx jctx;
-  zsv_jq_handle zjq;
-  unsigned count; // number of files exported so far
-  int err;
-};
-
-static int zsv_prop_foreach_export(struct zsv_foreach_dirent_handle *h, size_t depth) {
-  if(!h->is_dir) {
-    struct zsv_prop_foreach_export_ctx *ctx = h->ctx;
-    if(ctx->is_property_ctx.handler(h, depth) && !ctx->err) {
-      char suffix = 0;
-      if(strlen(h->parent_and_entry) > 5 && !zsv_stricmp((const unsigned char *)h->parent_and_entry + strlen(h->parent_and_entry) - 5, (const unsigned char *)".json"))
-        suffix = 'j'; // json
-      else if(strlen(h->parent_and_entry) > 4 && !zsv_stricmp((const unsigned char *)h->parent_and_entry + strlen(h->parent_and_entry) - 4, (const unsigned char *)".txt"))
-        suffix = 't'; // text
-      if(suffix) {
-        // for now, only handle json or txt
-        FILE *f = fopen(h->parent_and_entry, "rb");
-        if(!f)
-          perror(h->parent_and_entry);
-        else {
-          // create an entry for this file. the map key is the file name; its value is the file contents
-          unsigned char *js = zsv_json_from_str((const unsigned char *)h->parent_and_entry + strlen((const char *)ctx->src_cache_dir) + 1);
-          if(!js)
-            errno = ENOMEM, perror(NULL);
-          else if(*js) {
-            if(ctx->count > 0)
-              if(zsv_jq_parse(ctx->zjq, ",", 1))
-                ctx->err = 1;
-            if(!ctx->err) {
-              ctx->count++;
-              if(zsv_jq_parse(ctx->zjq, js, strlen((const char *)js)) || zsv_jq_parse(ctx->zjq, ":", 1))
-                ctx->err = 1;
-              else {
-                switch(suffix) {
-                case 'j': // json
-                  if(zsv_jq_parse_file(ctx->zjq, f))
-                    ctx->err = 1;
-                  break;
-                case 't': // txt
-                  // for now we are going to limit txt file values to 4096 chars and JSON-stringify it
-                  {
-                    unsigned char buff[4096];
-                    size_t n = fread(buff, 1, sizeof(buff), f);
-                    unsigned char *txt_js = NULL;
-                    if(n) {
-                      txt_js = zsv_json_from_str_n(buff, n);
-                      if(zsv_jq_parse(ctx->zjq, txt_js ? txt_js : (const unsigned char *)"null", txt_js ? strlen((const char *)txt_js) : 4))
-                        ctx->err = 1;
-                    }
-                  }
-                  break;
-                }
-              }
-            }
-          }
-          free(js);
-          fclose(f);
-        }
-      }
-    }
+    h->ctx = ctx;
   }
   return 0;
 }
@@ -829,7 +764,7 @@ static int zsv_prop_execute_copy(const char *src, const char *dest, unsigned cha
     // - dest exists (file)
     // - dest file property cache d.n. have conflicts
     struct zsv_prop_foreach_copy_ctx ctx = { 0 };
-    ctx.is_property_ctx = *zsv_prop_get_or_set_is_prop_file(NULL, 0, 0);
+    ctx.zsv_dir_filter = *zsv_prop_get_or_set_is_prop_file(NULL, 0, 0);
     ctx.dest_cache_dir = dest_cache_dir;
     ctx.src_cache_dir = src_cache_dir;
     ctx.force = force;
@@ -845,14 +780,14 @@ static int zsv_prop_execute_copy(const char *src, const char *dest, unsigned cha
     if(!err) {
       // for each property file, check if dest has same-named property file
       ctx.mode = zsv_prop_foreach_copy_mode_check;
-      zsv_foreach_dirent((const char *)src_cache_dir, ctx.is_property_ctx.max_depth, zsv_prop_foreach_copy,
+      zsv_foreach_dirent((const char *)src_cache_dir, ctx.zsv_dir_filter.max_depth, zsv_prop_foreach_copy,
                          &ctx, verbose);
     }
 
     if(!err && !(ctx.err && !force)) {
       // copy the files
       ctx.mode = zsv_prop_foreach_copy_mode_copy;
-      zsv_foreach_dirent((const char *)src_cache_dir, ctx.is_property_ctx.max_depth, zsv_prop_foreach_copy,
+      zsv_foreach_dirent((const char *)src_cache_dir, ctx.zsv_dir_filter.max_depth, zsv_prop_foreach_copy,
                          &ctx, verbose);
     }
   }
@@ -869,6 +804,8 @@ static int zsv_prop_execute_clean(const char *dirpath, unsigned char dry, unsign
     dirpath_len--;
   if(!dirpath_len)
     return 0;
+
+  // TO DO: if NO_STDIN, require --force, else prompt user
 
   char *cache_parent;
   if(!strcmp(dirpath, "."))
@@ -891,300 +828,42 @@ static int zsv_prop_execute_clean(const char *dirpath, unsigned char dry, unsign
 
 static int zsv_prop_execute_export(const char *src, const char *dest, unsigned char verbose) {
   int err = 0;
-  unsigned char *src_cache_dir = zsv_cache_path((const unsigned char *)src, NULL, 0);
-  if(!(src_cache_dir))
+  unsigned char *parent_dir = zsv_cache_path((const unsigned char *)src, NULL, 0);
+  if(!(parent_dir))
     err = errno = ENOMEM, perror(NULL);
   else {
-    FILE *fdest = dest ? fopen(dest, "wb") : stdout;
-    if(!fdest)
-      err = errno, perror(dest);
-    else {
-      struct zsv_prop_foreach_export_ctx ctx = { 0 };
-      ctx.is_property_ctx = *zsv_prop_get_or_set_is_prop_file(NULL, 0, 0);
-      ctx.src_cache_dir = src_cache_dir;
-
-      // use a jq filter to pretty-print
-      ctx.jctx.write1 = zsv_jq_fwrite1;
-      ctx.jctx.ctx = fdest;
-      ctx.jctx.flags = JV_PRINT_PRETTY | JV_PRINT_SPACE1;
-      enum zsv_jq_status jqstat;
-      ctx.zjq = zsv_jq_new((const unsigned char *)".", jv_to_json_func, &ctx.jctx, &jqstat);
-      if(!ctx.zjq)
-        err = 1, fprintf(stderr, "zsv_jq_new\n");
-      else {
-        if(jqstat == zsv_jq_status_ok && zsv_jq_parse(ctx.zjq, "{", 1) == zsv_jq_status_ok) {
-          // export each file
-          zsv_foreach_dirent((const char *)src_cache_dir, ctx.is_property_ctx.max_depth, zsv_prop_foreach_export,
-                             &ctx, verbose);
-          if(!ctx.err && zsv_jq_parse(ctx.zjq, "}", 1))
-            ctx.err = 1;
-          if(!ctx.err && zsv_jq_finish(ctx.zjq))
-            ctx.err = 1;
-          zsv_jq_delete(ctx.zjq);
-        }
-        err = ctx.err;
-      }
-      fclose(fdest);
-    }
+    struct zsv_dir_filter zsv_dir_filter = *zsv_prop_get_or_set_is_prop_file(NULL, 0, 0);
+    err = zsv_dir_to_json(parent_dir, (const unsigned char *)dest, &zsv_dir_filter, verbose);
   }
-  free(src_cache_dir);
+  free(parent_dir);
   return err;
 }
 
-struct prop_import_ctx {
-  const char *filepath_prefix;
-  unsigned char buff[4096];
-  size_t content_start;
-  FILE *out;
-  char *out_filepath;
-  struct jv_to_json_ctx jctx;
-  zsv_jq_handle zjq;
-
-  int err;
-  unsigned char in_obj:1;
-  unsigned char do_check:1;
-  unsigned char dry:1;
-  unsigned char _:5;
-};
-
-static void prop_import_close_out(struct prop_import_ctx *ctx) {
-  if(ctx->zjq) {
-    zsv_jq_finish(ctx->zjq);
-    zsv_jq_delete(ctx->zjq);
-    ctx->zjq = NULL;
-  }
-  if(ctx->out) {
-    fclose(ctx->out);
-    ctx->out = NULL;
-    free(ctx->out_filepath);
-    ctx->out_filepath = NULL;
-  }
-}
-
-static int prop_import_map_key(struct yajl_helper_parse_state *st,
-                               const unsigned char *s, size_t len) {
-  if(yajl_helper_level(st) == 1 && len) { // new property file entry
-    struct prop_import_ctx *ctx = yajl_helper_data(st);
-
-    char *fn = NULL;
-    if(ctx->filepath_prefix)
-      asprintf(&fn, "%s%c%.*s", ctx->filepath_prefix, FILESLASH, (int)len, s);
-    else
-      asprintf(&fn, "%.*s", (int)len, s);
-    if(!fn) {
-      errno = ENOMEM;
-      perror(NULL);
-    } else if(ctx->do_check) {
-      // we just want to check if the destination file exists
-      if(access(fn, F_OK) != -1) { // it exists
-        ctx->err = errno = EEXIST;
-        perror(fn);
-      }
-    } else if(ctx->dry) { // just output the name of the file
-      printf("%s\n", fn);
-    } else if(zsv_mkdirs(fn, 1)) {
-      fprintf(stderr, "Unable to create directories for %s\n", fn);
-    } else if(!((ctx->out = fopen(fn, "wb")))) {
-      perror(fn);
-    } else {
-      ctx->out_filepath = fn;
-      fn = NULL;
-
-      // if it's a JSON file, use a jq filter to pretty-print
-      if(strlen(ctx->out_filepath) > 5 && !zsv_stricmp((const unsigned char *)ctx->out_filepath + strlen(ctx->out_filepath) - 5, (const unsigned char *)".json")) {
-        ctx->jctx.write1 = zsv_jq_fwrite1;
-        ctx->jctx.ctx = ctx->out;
-        ctx->jctx.flags = JV_PRINT_PRETTY | JV_PRINT_SPACE1;
-        enum zsv_jq_status jqstat;
-        ctx->zjq = zsv_jq_new((const unsigned char *)".", jv_to_json_func, &ctx->jctx, &jqstat);
-        if(!ctx->zjq) {
-          fprintf(stderr, "zsv_jq_new: unable to open for %s\n", ctx->out_filepath);
-          prop_import_close_out(ctx);
-        }
-      }
-    }
-    free(fn);
-  }
-  return 1;
-}
-
-static int prop_import_start_obj(struct yajl_helper_parse_state *st) {
-  if(yajl_helper_level(st) == 2) {
-    struct prop_import_ctx *ctx = yajl_helper_data(st);
-    ctx->in_obj = 1;
-    ctx->content_start = yajl_get_bytes_consumed(st->yajl) - 1;
-  }
-  return 1;
-}
-
-// prop_import_flush(): return err
-static int prop_import_flush(yajl_handle yajl, struct prop_import_ctx *ctx) {
-  if(ctx->zjq) {
-    size_t current_position = yajl_get_bytes_consumed(yajl);
-    if(current_position <= ctx->content_start)
-      fprintf(stderr, "Error! prop_import_flush unexpected current position\n");
-    else
-      zsv_jq_parse(ctx->zjq, ctx->buff + ctx->content_start,
-                   current_position - ctx->content_start);
-    ctx->content_start = 0;
-  }
-  return 0;
-}
-
-static int prop_import_end_obj(struct yajl_helper_parse_state *st) {
-  if(yajl_helper_level(st) == 1) { // just finished level 2
-    struct prop_import_ctx *ctx = yajl_helper_data(st);
-    prop_import_flush(st->yajl, yajl_helper_data(st));
-    prop_import_close_out(ctx);
-    ctx->in_obj = 0;
-  }
-  return 1;
-}
-
-static int prop_import_process_value(struct yajl_helper_parse_state *st,
-                                     struct json_value *value) {
-  if(yajl_helper_level(st) == 1) { // just finished level 2
-    struct prop_import_ctx *ctx = yajl_helper_data(st);
-    const unsigned char *jsstr;
-    size_t len;
-    json_value_default_string(value, &jsstr, &len);
-    if(ctx->zjq) {
-      unsigned char *js = len ? zsv_json_from_str_n(jsstr, len) : NULL;
-      if(js)
-        zsv_jq_parse(ctx->zjq, js, strlen((char *)js));
-      else
-        zsv_jq_parse(ctx->zjq, "null", 4);
-      free(js);
-    } else if(len && ctx->out)
-      fwrite(jsstr, 1, len, ctx->out);
-    prop_import_close_out(ctx);
-  }
-  return 1;
-}
-
-
-static int zsv_prop_execute_import(const char *dest, const char *src, unsigned char force, unsigned char dry, unsigned char verbose) {
-  unsigned char *dest_cache_dir = NULL;
-  FILE *fsrc = NULL;
+static int zsv_prop_execute_import(const char *dest, const char *src, unsigned char force,
+                                   unsigned char dry, unsigned char verbose) {
   int err = 0;
-
+  unsigned char *target_dir = NULL;
+  FILE *fsrc = NULL;
   if(!force && !zsv_file_exists(dest)) {
     err = errno = ENOENT;
     perror(dest);
-  } else if(!(dest_cache_dir = zsv_cache_path((const unsigned char *)dest, NULL, 0))) {
+  } else if(!(target_dir = zsv_cache_path((const unsigned char *)dest, NULL, 0))) {
     err = errno = ENOMEM;
     perror(NULL);
   } else if(!(fsrc = src ? fopen(src, "rb") : stdin)) {
     err = errno;
     perror(src);
   } else {
-    char *tmp_fn = NULL;
-    if(!force) {
-      // if input is stdin, we'll need to read it twice, so save it first
-      // this isn't the most efficient way to do it, as it reads it 3 times
-      // but it's easier and the diff is immaterial
-      if(fsrc == stdin) {
-        fsrc = NULL;
-        tmp_fn = zsv_get_temp_filename("zsv_prop_XXXXXXXX");
-        src = (const char *)tmp_fn;
-        FILE *tmp_f;
-        if(!tmp_fn) {
-          err = errno = ENOMEM;
-          perror(NULL);
-        } else if(!(tmp_f = fopen(tmp_fn, "wb"))) {
-          err = errno;
-          perror(tmp_fn);
-        } else {
-          err = zsv_copy_file_ptr(stdin, tmp_f);
-          fclose(tmp_f);
-          if(!(fsrc = fopen(tmp_fn, "rb"))) {
-            err = errno;
-            perror(tmp_fn);
-          }
-        }
-      }
-    }
-
-    if(!err) {
-      // we will run this loop either once (force) or twice (no force):
-      // 1. check before running (no force)
-      // 2. do the import
-      char do_check = !force;
-
-      if(do_check && !zsv_dir_exists((const char *)dest_cache_dir))
-        do_check = 0;
-
-      for(int i = do_check ? 0 : 1; i < 2 && !err; i++) {
-        do_check = i == 0;
-
-        size_t bytes_read;
-        struct yajl_helper_parse_state st;
-        struct prop_import_ctx ctx = { 0 };
-        ctx.filepath_prefix = (const char *)dest_cache_dir;
-
-        int (*start_obj)(struct yajl_helper_parse_state *st) = NULL;
-        int (*end_obj)(struct yajl_helper_parse_state *st) = NULL;
-        int (*process_value)(struct yajl_helper_parse_state *, struct json_value *) = NULL;
-
-        if(do_check)
-          ctx.do_check = do_check;
-        else {
-          ctx.dry = dry;
-          if(!ctx.dry) {
-            start_obj = prop_import_start_obj;
-            end_obj = prop_import_end_obj;
-            process_value = prop_import_process_value;
-          }
-        }
-
-        if(yajl_helper_parse_state_init(&st, 32,
-                                        start_obj, end_obj, // map start/end
-                                        prop_import_map_key,
-                                        start_obj, end_obj, // array start/end
-                                        process_value,
-                                        &ctx) != yajl_status_ok) {
-          err = errno = ENOMEM;
-          perror(NULL);
-        } else {
-          while((bytes_read = fread(ctx.buff, 1, sizeof(ctx.buff), fsrc)) > 0) {
-            if(yajl_parse(st.yajl, ctx.buff, bytes_read) != yajl_status_ok)
-              yajl_helper_print_err(st.yajl, ctx.buff, bytes_read);
-            if(ctx.in_obj)
-              prop_import_flush(st.yajl, &ctx);
-          }
-          if(yajl_complete_parse(st.yajl) != yajl_status_ok)
-            yajl_helper_print_err(st.yajl, ctx.buff, bytes_read);
-
-          if(ctx.out) { // e.g. if bad JSON and parse failed
-            fclose(ctx.out);
-            free(ctx.out_filepath);
-          }
-        }
-        yajl_helper_parse_state_free(&st);
-
-        if(ctx.err)
-          err = ctx.err;
-        if(i == 0) {
-          rewind(fsrc);
-          if(errno) {
-            err = errno;
-            perror(NULL);
-          }
-        }
-      }
-    }
-    if(tmp_fn) {
-      unlink(tmp_fn);
-      free(tmp_fn);
-    }
+    int flags = (force ? ZSV_DIR_FLAG_FORCE : 0) | (dry ? ZSV_DIR_FLAG_DRY : 0);
+    err = zsv_dir_from_json(target_dir, fsrc, flags, verbose);
   }
-
   if(fsrc && fsrc != stdin)
     fclose(fsrc);
-  free(dest_cache_dir);
-
+  free(target_dir);
   return err;
 }
+
+
 
 int ZSV_MAIN_NO_OPTIONS_FUNC(ZSV_COMMAND)(int m_argc, const char *m_argv[]) {
   int err = 0;
@@ -1200,9 +879,6 @@ int ZSV_MAIN_NO_OPTIONS_FUNC(ZSV_COMMAND)(int m_argc, const char *m_argv[]) {
     const unsigned char *filepath = (const unsigned char *)m_argv[1];
     if(m_argc == 2)
       return show_all_properties(filepath);
-
-    if(m_argc == 3 && !strcmp("--clear", m_argv[2]))
-      return zsv_cache_remove(filepath, zsv_cache_type_property);
 
     enum zsv_prop_mode mode = zsv_prop_mode_default;
     unsigned char dry = 0;
@@ -1229,9 +905,7 @@ int ZSV_MAIN_NO_OPTIONS_FUNC(ZSV_COMMAND)(int m_argc, const char *m_argv[]) {
               err = fprintf(stderr, "Option %s requires a value\n", opt);
           }
         }
-      } else if(!strcmp(opt, "--clear"))
-        err = fprintf(stderr, "--clear cannot be used in conjunction with any other options\n");
-      else if(!strcmp(opt, "--auto")) {
+      } else if(!strcmp(opt, "--auto")) {
         if(opts.d != ZSV_PROP_ARG_NONE && opts.R != ZSV_PROP_ARG_NONE)
           err = fprintf(stderr, "--auto specified, but all other properties also specified");
         else {
@@ -1253,6 +927,7 @@ int ZSV_MAIN_NO_OPTIONS_FUNC(ZSV_COMMAND)(int m_argc, const char *m_argv[]) {
     }
 
     // check if option combination is invalid
+    // to do: check with zsv_prop_mode_clear
     if(!err) {
       char have_auto = opts.d == ZSV_PROP_ARG_AUTO || opts.R == ZSV_PROP_ARG_AUTO;
       char have_specified = opts.d >= 0 || opts.R >= 0;
@@ -1273,6 +948,25 @@ int ZSV_MAIN_NO_OPTIONS_FUNC(ZSV_COMMAND)(int m_argc, const char *m_argv[]) {
 
     if(!err) {
       switch(mode) {
+      case zsv_prop_mode_clear:
+        if(!(filepath && *filepath))
+          err = fprintf(stderr, "--clear: please specify an input file\n");
+        else {
+          struct prop_opts opts2 = { 0 };
+          opts2.d = ZSV_PROP_ARG_NONE;
+          opts2.R = ZSV_PROP_ARG_NONE;
+          if(memcmp(&opts, &opts2, sizeof(opts)))
+            err = fprintf(stderr, "--clear cannot be used in conjunction with any other options\n");
+          else {
+            unsigned char *cache_path = zsv_cache_path(filepath, NULL, 0);
+            if(!cache_path)
+              err = ENOMEM;
+            else if(zsv_dir_exists((const char *)cache_path))
+              err = zsv_remove_dir_recursive(cache_path);
+            free(cache_path);
+          }
+        }
+        break;
       case zsv_prop_mode_list_files:
         err = zsv_prop_execute_list_files(filepath, verbose);
         break;
