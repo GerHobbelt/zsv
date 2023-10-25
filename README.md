@@ -19,11 +19,13 @@ lib only:
 
 zsv+lib is a fast CSV parser library and extensible command-line utility.
 It achieves high performance using SIMD operations,
-[efficient memory use](docs/memory.md) and other optimization techniques.
+[efficient memory use](docs/memory.md) and other optimization techniques, and
+can also parse generic-delimited and fixed-width formats, as well as multi-row-span headers
 
-The ZSV CLI can be compiled to virtually any target, including [web assembly](examples/js).
+The ZSV CLI can be compiled to virtually any target, including [web assembly](examples/js), and offers features including `select`, `count`, direct CSV `sql`, `flatten`, `serialize`, `2json` conversion, `2db` sqlite3 conversion, `stack`, `pretty`, `2tsv`, `compare` and more.
 
-Pre-built CLI packages are available via brew and nuget.
+Pre-built CLI packages are available via brew and nuget
+
 
 A pre-built library package is available for Node (`npm install zsv-lib`). Please note, this package
 is still in alpha and currently only exposes a small subset of the zsv library capabilities. More
@@ -70,11 +72,16 @@ that implements the expected
   "dirty"
 * Runs on macOS (tested on clang/gcc), Linux (gcc), Windows (mingw),
   BSD (gcc-only) and in-browser (emscripten/wasm)
-* Fast (maybe the fastest ever, at least on all platforms we've benchmarked where
-  256 SIMD operations are available). See
+* Fastest (at least, vs all alternatives and on all platforms we've benchmarked where
+  256-bit SIMD operations are available). See
   [app/benchmark/README.md](app/benchmark/README.md)
 * Low memory usage (regardless of how big your data is) and size footprint for
   both lib (~20k) and CLI executable (< 1MB)
+* Handles general delimited data (e.g. pipe-delimited) and fixed-with input
+  (with specified widths or auto-detected widths)
+* Handles multi-row headers
+* Handles input from any stream, including caller-defined streams accessed via
+  a single caller-defined `fread`-like function
 * Easy to use as a library in a few lines of code, via either pull or push parsing
 * Includes the `zsv` CLI with the following built-in commands:
   * `select`, `count`, `sql` query, `desc`ribe, `flatten`, `serialize`, `2json`,
