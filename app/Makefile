@@ -134,12 +134,9 @@ CFLAGS+= -I${PREFIX}/include
 THIS_LIB_BASE=$(shell cd .. && pwd)
 INCLUDE_DIR=${THIS_LIB_BASE}/include
 BUILD_DIR=${THIS_LIB_BASE}/build/${BUILD_SUBDIR}/${CCBN}
-UTILS1=writer file err signal mem clock arg dl string dirs prop cache jq
+UTILS1=writer file err signal mem clock arg dl string dirs prop cache jq os
 
 ZSV_EXTRAS ?=
-ifneq ($(WIN),0)
- UTILS1+= os
-endif
 
 ifneq ($(findstring emcc,$(CC)),) # emcc
   ZSV_EXTRAS=1
@@ -208,10 +205,10 @@ INIH_INCLUDE=${THIS_MAKEFILE_DIR}/external/inih
 INIH_OBJECT=${BUILD_DIR}-external/inih/inih.o
 CLI_INCLUDE+= -I${INIH_INCLUDE}
 
-YAJL_SRC=${THIS_MAKEFILE_DIR}/external/yajl/yajl.c
+YAJL_SRC_DIR=${THIS_MAKEFILE_DIR}/external/yajl
 YAJL_OBJ1=yajl yajl_alloc yajl_buf yajl_encode yajl_gen yajl_lex yajl_parser yajl_tree yajl_version
 YAJL_OBJ=$(addprefix ${BUILD_DIR}-external/yajl/,$(addsuffix .o,${YAJL_OBJ1}))
-YAJL_INCLUDE=-I${THIS_MAKEFILE_DIR}/external/yajl/build/yajl-2.1.1/include
+YAJL_INCLUDE=-I${YAJL_SRC_DIR}/build/yajl-2.1.1/include
 
 YAJL_HELPER_OBJ=${BUILD_DIR}-external/yajl_helper/yajl_helper.o
 YAJL_HELPER_INCLUDE=-I${THIS_MAKEFILE_DIR}/external/yajl_helper
