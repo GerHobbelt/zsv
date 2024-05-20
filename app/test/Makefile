@@ -100,7 +100,7 @@ test: ${TESTS}
 test-prop:
 	EXE=${BUILD_DIR}/bin/zsv_prop${EXE} make -C prop test
 
-test-echo : test-echo1 test-echo-overwrite test-echo-eol test-echo-overwrite-csv test-echo-chars test-echo-trim test-echo-skip-until
+test-echo : test-echo1 test-echo-overwrite test-echo-eol test-echo-overwrite-csv test-echo-chars test-echo-trim test-echo-skip-until test-echo-contiguous test-echo-trim-columns test-echo-trim-columns-2
 
 test-echo1: ${BUILD_DIR}/bin/zsv_echo${EXE}
 	@${TEST_INIT}
@@ -122,6 +122,21 @@ test-echo-trim: ${BUILD_DIR}/bin/zsv_echo${EXE}
 test-echo-skip-until: ${BUILD_DIR}/bin/zsv_echo${EXE}
 	@${TEST_INIT}
 	@${PREFIX} $< --skip-until ASF ${TEST_DATA_DIR}/test/echo-skip-until.csv ${REDIRECT} ${TMP_DIR}/$@.out
+	@${CMP} ${TMP_DIR}/$@.out expected/$@.out && ${TEST_PASS} || ${TEST_FAIL}
+
+test-echo-contiguous: ${BUILD_DIR}/bin/zsv_echo${EXE}
+	@${TEST_INIT}
+	@${PREFIX} $< --contiguous ${TEST_DATA_DIR}/test/../../data/test/echo-contiguous.csv ${REDIRECT} ${TMP_DIR}/$@.out
+	@${CMP} ${TMP_DIR}/$@.out expected/$@.out && ${TEST_PASS} || ${TEST_FAIL}
+
+test-echo-trim-columns: ${BUILD_DIR}/bin/zsv_echo${EXE}
+	@${TEST_INIT}
+	@${PREFIX} $< --trim-columns ${TEST_DATA_DIR}/test/echo-trim-columns.csv ${REDIRECT} ${TMP_DIR}/$@.out
+	@${CMP} ${TMP_DIR}/$@.out expected/$@.out && ${TEST_PASS} || ${TEST_FAIL}
+
+test-echo-trim-columns-2: ${BUILD_DIR}/bin/zsv_echo${EXE}
+	@${TEST_INIT}
+	@${PREFIX} $< --trim --trim-columns ${TEST_DATA_DIR}/test/echo-trim-columns.csv ${REDIRECT} ${TMP_DIR}/$@.out
 	@${CMP} ${TMP_DIR}/$@.out expected/$@.out && ${TEST_PASS} || ${TEST_FAIL}
 
 test-echo-chars: ${BUILD_DIR}/bin/zsv_echo${EXE}
@@ -480,6 +495,20 @@ test-desc: test-%: ${BUILD_DIR}/bin/zsv_%${EXE}
 	@(${PREFIX} $< < ${TEST_DATA_DIR}/test/$*-trim.csv ${REDIRECT2} ${TMP_DIR}/$@.trim && \
 	${CMP} ${TMP_DIR}/$@.trim expected/$@.trim && ${TEST_PASS} || ${TEST_FAIL})
 
+test-compare-tolerance: ${BUILD_DIR}/bin/zsv_compare${EXE}
+	@(${PREFIX} $< ../../data/compare/tolerance1.csv ../../data/compare/tolerance2.csv ${REDIRECT1} ${TMP_DIR}/$@.out1 && \
+	${CMP} ${TMP_DIR}/$@.out1 expected/$@.out1 && ${TEST_PASS} || ${TEST_FAIL})
+
+	@(${PREFIX} $< --tolerance 0.001 ../../data/compare/tolerance1.csv ../../data/compare/tolerance2.csv ${REDIRECT1} ${TMP_DIR}/$@.out2 && \
+	${CMP} ${TMP_DIR}/$@.out2 expected/$@.out2 && ${TEST_PASS} || ${TEST_FAIL})
+
+	@(${PREFIX} $< --tolerance 0.0001 ../../data/compare/tolerance1.csv ../../data/compare/tolerance2.csv ${REDIRECT1} ${TMP_DIR}/$@.out3 && \
+	${CMP} ${TMP_DIR}/$@.out3 expected/$@.out3 && ${TEST_PASS} || ${TEST_FAIL})
+
+	@(${PREFIX} $< --tolerance 0.00001 ../../data/compare/tolerance1.csv ../../data/compare/tolerance2.csv ${REDIRECT1} ${TMP_DIR}/$@.out4 && \
+	${CMP} ${TMP_DIR}/$@.out4 expected/$@.out4 && ${TEST_PASS} || ${TEST_FAIL})
+
+
 test-compare: test-%: ${BUILD_DIR}/bin/zsv_%${EXE}
 	@${TEST_INIT}
 	@(${PREFIX} $< compare/t1.csv compare/t2.csv compare/t3.csv ${REDIRECT1} ${TMP_DIR}/$@.out && \
@@ -514,3 +543,4 @@ test-compare: test-%: ${BUILD_DIR}/bin/zsv_%${EXE}
 
 	@(${PREFIX} $< ../../data/compare/t1.csv ../../data/compare/t2.csv --add AccentCity --sort -k country -k city ${REDIRECT1} ${TMP_DIR}/$@.out10 && \
 	${CMP} ${TMP_DIR}/$@.out10 expected/$@.out10 && ${TEST_PASS} || ${TEST_FAIL})
+
