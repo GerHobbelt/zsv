@@ -49,6 +49,11 @@ struct zsv_echo_data {
       const char *sql;
     } sqlite3;
   } o;
+
+  unsigned char *skip_until_prefix;
+  size_t skip_until_prefix_len;
+  unsigned char trim_white:1;
+  unsigned char _:7;
 };
 
 /**
@@ -86,15 +91,19 @@ static void zsv_echo_row(void *hook) {
   if(VERY_UNLIKELY(data->row_ix == 0)) { // header
     for(size_t i = 0, j = zsv_cell_count(data->parser); i < j; i++) {
       struct zsv_cell cell = zsv_get_cell(data->parser, i);
+      if(UNLIKELY(data->trim_white))
+        cell.str = (unsigned char *)zsv_strtrim(cell.str, &cell.len);
       zsv_writer_cell(data->csv_writer, i == 0, cell.str, cell.len, cell.quoted);
     }
   } else {
     for(size_t i = 0, j = zsv_cell_count(data->parser); i < j; i++) {
-      if(data->overwrite.row_ix == data->row_ix && data->overwrite.col_ix == i) {
+      if(VERY_UNLIKELY(data->overwrite.row_ix == data->row_ix && data->overwrite.col_ix == i)) {
         zsv_writer_cell(data->csv_writer, i == 0, data->overwrite.str, data->overwrite.len, 1);
         zsv_echo_get_next_overwrite(data);
       } else {
         struct zsv_cell cell = zsv_get_cell(data->parser, i);
+        if(UNLIKELY(data->trim_white))
+          cell.str = (unsigned char *)zsv_strtrim(cell.str, &cell.len);
         zsv_writer_cell(data->csv_writer, i == 0, cell.str, cell.len, cell.quoted);
       }
     }
@@ -104,6 +113,17 @@ static void zsv_echo_row(void *hook) {
   data->row_ix++;
 }
 
+static void zsv_echo_row_skip_until(void *hook) {
+  struct zsv_echo_data *data = hook;
+  struct zsv_cell cell = zsv_get_cell(data->parser, 0);
+  if(cell.len && cell.str && cell.len >= data->skip_until_prefix_len
+     && (!data->skip_until_prefix_len || !zsv_strincmp(cell.str, data->skip_until_prefix_len,
+                                                       data->skip_until_prefix, data->skip_until_prefix_len))) {
+    zsv_set_row_handler(data->parser, zsv_echo_row);
+    zsv_echo_row(hook);
+  }
+}
+
 const char *zsv_echo_usage_msg[] = {
   APPNAME ": write tabular input to stdout with optional cell overwrites",
   "",
@@ -111,6 +131,8 @@ const char *zsv_echo_usage_msg[] = {
   "",
   "Options:",
   "  -b                  : output with BOM",
+  "  --trim              : trim whitespace",
+  "  --skip-until <value>: ignore all leading rows until the first row whose first column starts with the given value ",
   "  --overwrite <source>: overwrite cells using given source. Source may be:",
   "                        - sqlite3://<filename>[?sql=<query>]",
   "                          ex: sqlite3://overwrites.db?sql=select row, column, value from overwrites order by row, column",
@@ -128,6 +150,7 @@ static int zsv_echo_usage() {
 static void zsv_echo_cleanup(struct zsv_echo_data *data) {
   zsv_writer_delete(data->csv_writer);
   free(data->o.sqlite3.filename);
+  free(data->skip_until_prefix);
   if(data->o.sqlite3.stmt)
     sqlite3_finalize(data->o.sqlite3.stmt);
   if(data->in && data->in != stdin)
@@ -206,7 +229,21 @@ int ZSV_MAIN_FUNC(ZSV_COMMAND)(int argc, const char *argv[], struct zsv_opts *op
     const char *arg = argv[arg_i];
     if(!strcmp(arg, "-b"))
       writer_opts.with_bom = 1;
-    else if(!strcmp(arg, "--overwrite")) {
+    else if(!strcmp(arg, "--trim"))
+      data.trim_white = 1;
+    else if(!strcmp(arg, "--skip-until")) {
+      if(++arg_i >= argc) {
+        fprintf(stderr, "Option %s requires a value\n", arg);
+        err = 1;
+      } else if(!argv[arg_i][0]) {
+        fprintf(stderr, "--skip-until requires a non-empty value\n");
+        err = 1;
+      } else {
+        free(data.skip_until_prefix);
+        data.skip_until_prefix = (unsigned char *)strdup(argv[arg_i]);
+        data.skip_until_prefix_len = data.skip_until_prefix ? strlen((char *)data.skip_until_prefix) : 0;
+      }
+    } else if(!strcmp(arg, "--overwrite")) {
       if(arg_i+1 >= argc) {
         fprintf(stderr, "Option %s requires a value\n", arg);
         err = 1;
@@ -251,7 +288,10 @@ int ZSV_MAIN_FUNC(ZSV_COMMAND)(int argc, const char *argv[], struct zsv_opts *op
     return 1;
   }
 
-  opts->row_handler = zsv_echo_row;
+  if(data.skip_until_prefix)
+    opts->row_handler = zsv_echo_row_skip_until;
+  else
+    opts->row_handler = zsv_echo_row;
   opts->stream = data.in;
   opts->ctx = &data;
   data.csv_writer = zsv_writer_new(&writer_opts);
