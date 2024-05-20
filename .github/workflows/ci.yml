@@ -3,12 +3,10 @@ name: ci
 on:
   push:
     branches: [main]
-    paths-ignore:
-    - "**.md"
+    paths-ignore: ['**.md']
   pull_request:
     branches: [main]
-    paths-ignore:
-    - "**.md"
+    paths-ignore: ['**.md']
   release:
     types: [published]
 
@@ -17,7 +15,7 @@ jobs:
     name: ci
     strategy:
       matrix:
-        os: [ubuntu-20.04, macos-12]
+        os: [ubuntu-20.04, macos-12, macos-14]
 
     runs-on: ${{ matrix.os }}
 
@@ -27,6 +25,7 @@ jobs:
       AMD64_LINUX_CLANG: amd64-linux-clang
       AMD64_WINDOWS_MINGW: amd64-windows-mingw
       AMD64_MACOSX_GCC: amd64-macosx-gcc
+      ARM64_MACOSX_GCC: arm64-macosx-gcc
       AMD64_FREEBSD_GCC: amd64-freebsd-gcc
       ARTIFACT_DIR: .artifacts
       ARTIFACT_RETENTION_DAYS: 5
@@ -36,16 +35,16 @@ jobs:
       if: startsWith(github.ref, 'refs/tags/v')
       shell: bash
       run: |
-        TAG=$(echo $GITHUB_REF | cut -d '/' -f3)
+        TAG="$GITHUB_REF_NAME"
         echo "TAG: $TAG"
         if [[ $TAG == "v"* ]]; then
           TAG="${TAG:1}"
         fi
         echo "TAG: $TAG"
-        echo "TAG=$TAG" >> $GITHUB_ENV
+        echo "TAG=$TAG" >> "$GITHUB_ENV"
 
     - name: Checkout
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Set up Linux
       if: runner.os == 'Linux'
@@ -54,7 +53,7 @@ jobs:
         sudo apt install -y mingw-w64 rpm alien nuget
         sudo apt remove -y jq
 
-    - name: Set up macOS
+    - name: Set up macOS (AMD64 and ARM64)
       if: runner.os == 'macOS'
       run: |
         brew install coreutils tree autoconf automake libtool
@@ -62,25 +61,15 @@ jobs:
 
     # --- Build ---
 
-    - name: Build on macOS-12 (${{ env.AMD64_FREEBSD_GCC }})
-      if: matrix.os == 'macos-12'
+    - name: Build on Linux (${{ env.AMD64_FREEBSD_GCC }})
+      if: runner.os == 'Linux'
+      uses: cross-platform-actions/action@v0.23.0
       env:
         PREFIX: ${{ env.AMD64_FREEBSD_GCC }}
         CC: gcc
         MAKE: gmake
         RUN_TESTS: false
-#      uses: vmactions/freebsd-vm@v0   # https://github.com/vmactions/freebsd-vm
-      uses: cross-platform-actions/action@v0.21.0
       with:
-#        mem: 2048
-#        release: 12.3
-#        envs: 'PREFIX CC MAKE RUN_TESTS ARTIFACT_DIR'
-#        usesh: true
-#        prepare: pkg install -y tree zip git autotools gmake lang/gcc
-#        run: |
-#          ./scripts/ci-build.sh
-
-### valid inputs are ['run', 'operating_system', 'architecture', 'version', 'shell', 'environment_variables', 'memory', 'cpu_count', 'hypervisor', 'image_url', 'sync_files']
         memory: 2048
         shell: sh
         operating_system: freebsd
@@ -129,16 +118,27 @@ jobs:
         AR: x86_64-w64-mingw32-ar
         NM: x86_64-w64-mingw32-nm
         WINDRES: x86_64-w64-mingw32-windres
-
       shell: bash
       run: |
         ./scripts/ci-build.sh
         ./scripts/ci-create-nuget-package.sh
 
     - name: Build on macOS (${{ env.AMD64_MACOSX_GCC }})
-      if: runner.os == 'macOS'
+      if: matrix.os == 'macos-12'
       env:
         PREFIX: ${{ env.AMD64_MACOSX_GCC }}
+        CC: gcc-11
+        MAKE: make
+        RUN_TESTS: false
+      shell: bash
+      run: |
+        ./scripts/ci-build.sh
+        ./$PREFIX/bin/zsv version
+
+    - name: Build on macOS (${{ env.ARM64_MACOSX_GCC }})
+      if: matrix.os == 'macos-14'
+      env:
+        PREFIX: ${{ env.ARM64_MACOSX_GCC }}
         CC: gcc-11
         MAKE: make
         RUN_TESTS: false
@@ -154,7 +154,7 @@ jobs:
 
     - name: Upload (zsv-${{ env.TAG }}-${{ env.AMD64_LINUX_GCC }}.zip)
       if: runner.os == 'Linux'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       env:
         ARTIFACT_NAME: zsv-${{ env.TAG }}-${{ env.AMD64_LINUX_GCC }}.zip
       with:
@@ -165,7 +165,7 @@ jobs:
 
     - name: Upload (zsv-${{ env.TAG }}-${{ env.AMD64_LINUX_CLANG }}.zip)
       if: runner.os == 'Linux'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       env:
         ARTIFACT_NAME: zsv-${{ env.TAG }}-${{ env.AMD64_LINUX_CLANG }}.zip
       with:
@@ -176,7 +176,7 @@ jobs:
 
     - name: Upload (zsv-${{ env.TAG }}-${{ env.AMD64_LINUX_GCC }}.deb)
       if: runner.os == 'Linux'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       env:
         ARTIFACT_NAME: zsv-${{ env.TAG }}-${{ env.AMD64_LINUX_GCC }}.deb
       with:
@@ -187,7 +187,7 @@ jobs:
 
     - name: Upload (zsv-${{ env.TAG }}-${{ env.AMD64_LINUX_CLANG }}.deb)
       if: runner.os == 'Linux'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       env:
         ARTIFACT_NAME: zsv-${{ env.TAG }}-${{ env.AMD64_LINUX_CLANG }}.deb
       with:
@@ -198,7 +198,7 @@ jobs:
 
     - name: Upload (zsv-${{ env.TAG }}-${{ env.AMD64_LINUX_GCC }}.rpm)
       if: runner.os == 'Linux'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       env:
         ARTIFACT_NAME: zsv-${{ env.TAG }}-${{ env.AMD64_LINUX_GCC }}.rpm
       with:
@@ -209,7 +209,7 @@ jobs:
 
     - name: Upload (zsv-${{ env.TAG }}-${{ env.AMD64_LINUX_CLANG }}.rpm)
       if: runner.os == 'Linux'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       env:
         ARTIFACT_NAME: zsv-${{ env.TAG }}-${{ env.AMD64_LINUX_CLANG }}.rpm
       with:
@@ -220,7 +220,7 @@ jobs:
 
     - name: Upload (zsv-${{ env.TAG }}-${{ env.AMD64_WINDOWS_MINGW }}.zip)
       if: runner.os == 'Linux'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       env:
         ARTIFACT_NAME: zsv-${{ env.TAG }}-${{ env.AMD64_WINDOWS_MINGW }}.zip
       with:
@@ -231,7 +231,7 @@ jobs:
 
     - name: Upload (zsv-${{ env.TAG }}-${{ env.AMD64_WINDOWS_MINGW }}.nupkg)
       if: runner.os == 'Linux'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       env:
         ARTIFACT_NAME: zsv-${{ env.TAG }}-${{ env.AMD64_WINDOWS_MINGW }}.nupkg
       with:
@@ -241,8 +241,8 @@ jobs:
         if-no-files-found: error
 
     - name: Upload (zsv-${{ env.TAG }}-${{ env.AMD64_MACOSX_GCC }}.zip)
-      if: runner.os == 'macOS'
-      uses: actions/upload-artifact@v3
+      if: matrix.os == 'macos-12'
+      uses: actions/upload-artifact@v4
       env:
         ARTIFACT_NAME: zsv-${{ env.TAG }}-${{ env.AMD64_MACOSX_GCC }}.zip
       with:
@@ -251,9 +251,20 @@ jobs:
         retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
         if-no-files-found: error
 
+    - name: Upload (zsv-${{ env.TAG }}-${{ env.ARM64_MACOSX_GCC }}.zip)
+      if: matrix.os == 'macos-14'
+      uses: actions/upload-artifact@v4
+      env:
+        ARTIFACT_NAME: zsv-${{ env.TAG }}-${{ env.ARM64_MACOSX_GCC }}.zip
+      with:
+        name: ${{ env.ARTIFACT_NAME }}
+        path: ${{ env.ARTIFACT_DIR }}/${{ env.ARTIFACT_NAME }}
+        retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+        if-no-files-found: error
+
     - name: Upload (zsv-${{ env.TAG }}-${{ env.AMD64_FREEBSD_GCC }}.zip)
-      if: matrix.os == 'macos-12'
-      uses: actions/upload-artifact@v3
+      if: runner.os == 'Linux'
+      uses: actions/upload-artifact@v4
       env:
         ARTIFACT_NAME: zsv-${{ env.TAG }}-${{ env.AMD64_FREEBSD_GCC }}.zip
       with:
@@ -264,7 +275,7 @@ jobs:
 
     - name: Upload (zsv-${{ env.TAG }}-${{ env.AMD64_LINUX_GCC }}.tar.gz)
       if: runner.os == 'Linux'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       env:
         ARTIFACT_NAME: zsv-${{ env.TAG }}-${{ env.AMD64_LINUX_GCC }}.tar.gz
       with:
@@ -275,7 +286,7 @@ jobs:
 
     - name: Upload (zsv-${{ env.TAG }}-${{ env.AMD64_LINUX_CLANG }}.tar.gz)
       if: runner.os == 'Linux'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       env:
         ARTIFACT_NAME: zsv-${{ env.TAG }}-${{ env.AMD64_LINUX_CLANG }}.tar.gz
       with:
@@ -286,7 +297,7 @@ jobs:
 
     - name: Upload (zsv-${{ env.TAG }}-${{ env.AMD64_WINDOWS_MINGW }}.tar.gz)
       if: runner.os == 'Linux'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       env:
         ARTIFACT_NAME: zsv-${{ env.TAG }}-${{ env.AMD64_WINDOWS_MINGW }}.tar.gz
       with:
@@ -296,8 +307,8 @@ jobs:
         if-no-files-found: error
 
     - name: Upload (zsv-${{ env.TAG }}-${{ env.AMD64_MACOSX_GCC }}.tar.gz)
-      if: runner.os == 'macOS'
-      uses: actions/upload-artifact@v3
+      if: matrix.os == 'macos-12'
+      uses: actions/upload-artifact@v4
       env:
         ARTIFACT_NAME: zsv-${{ env.TAG }}-${{ env.AMD64_MACOSX_GCC }}.tar.gz
       with:
@@ -306,9 +317,20 @@ jobs:
         retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
         if-no-files-found: error
 
+    - name: Upload (zsv-${{ env.TAG }}-${{ env.ARM64_MACOSX_GCC }}.tar.gz)
+      if: matrix.os == 'macos-14'
+      uses: actions/upload-artifact@v4
+      env:
+        ARTIFACT_NAME: zsv-${{ env.TAG }}-${{ env.ARM64_MACOSX_GCC }}.tar.gz
+      with:
+        name: ${{ env.ARTIFACT_NAME }}
+        path: ${{ env.ARTIFACT_DIR }}/${{ env.ARTIFACT_NAME }}
+        retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+        if-no-files-found: error
+
     - name: Upload (zsv-${{ env.TAG }}-${{ env.AMD64_FREEBSD_GCC }}.tar.gz)
-      if: matrix.os == 'macos-12'
-      uses: actions/upload-artifact@v3
+      if: runner.os == 'Linux'
+      uses: actions/upload-artifact@v4
       env:
         ARTIFACT_NAME: zsv-${{ env.TAG }}-${{ env.AMD64_FREEBSD_GCC }}.tar.gz
       with:
@@ -333,7 +355,7 @@ jobs:
     # --- Update homebrew tap ---
 
     - name: Update homebrew tap (liquidaty/homebrew-zsv)
-      if: ${{ startsWith(github.ref, 'refs/tags/v') && runner.os == 'macOS' }}
+      if: ${{ startsWith(github.ref, 'refs/tags/v') && matrix.os == 'macos-12' }}
       env:
         HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
         TAG: ${{ env.TAG }}
