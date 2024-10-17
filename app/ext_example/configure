@@ -124,7 +124,7 @@ tryccfn () {
         printf "%s\n" $3 | sed 's/\(.*\)/#include <\1>/' >> "$tmpc"
     fi
     cat >> "$tmpc" <<EOF
-int main() {$2;}
+int main(void) {$2;}
 EOF
     flag=$(echo "$2" | cut -d'(' -f1 | tr a-z A-Z)
     if $CC -o "$tmpo" "$tmpc" >/dev/null 2>&1 ; then
@@ -158,7 +158,7 @@ tryccfn1 () {
     rm -f "$tmpc"
     printf "checking whether compiler accepts %s(%s)..." "$2" "$3"
     cat >> "$tmpc" <<EOF
-int main() {$2($3);}
+int main(void) {$2($3);}
 EOF
     flag=$(echo "$2" | cut -d'(' -f1 | tr a-z A-Z)
     eval "vars=\$$1"
@@ -184,7 +184,7 @@ EOF
 
 tryflag () {
     printf "checking whether compiler accepts %s... " "$2"
-    echo "int main() {return 0;}" > "$tmpc"
+    echo "int main(void) {return 0;}" > "$tmpc"
     if $CC $CFLAGS_TRY $2 -c -o "$tmpo" "$tmpc" >/dev/null 2>&1 ; then
         printf "yes\n"
         eval "$1=\"\${$1} \$2\""
@@ -198,7 +198,7 @@ tryflag () {
 
 tryldflag () { # var, flag, other_arguments (optional)
     printf "checking whether linker accepts %s... " "$2"
-    echo "int main(){return 0;}" > "$tmpc"
+    echo "int main(void){return 0;}" > "$tmpc"
     if $CC $LDFLAGS "$2" $3 -o "$tmpo" "$tmpc" >/dev/null 2>&1 ; then
         printf "yes\n"
         eval "$1=\"\${$1} \$2\""

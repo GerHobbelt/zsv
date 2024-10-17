@@ -292,7 +292,7 @@ static void my_row_handler(void *ctx) {
   }
 }
 
-int main() {
+int main(void) {
   zsv_parser p = zsv_new(NULL);
   zsv_set_row_handler(p, my_row_handler);
   zsv_set_context(p, p);
