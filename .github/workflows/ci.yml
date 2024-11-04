@@ -10,32 +10,20 @@ on:
   release:
     types: [published]
 
+env:
+  ARTIFACT_RETENTION_DAYS: 5
+
 jobs:
-  ci:
-    name: ci
-    strategy:
-      matrix:
-        os: [ubuntu-20.04, macos-12, macos-14]
+  tag:
+    runs-on: ubuntu-latest
 
-    runs-on: ${{ matrix.os }}
-
-    permissions:
-      contents: write
-
-    env:
-      TAG: "0.3.6"
-      AMD64_LINUX_GCC: amd64-linux-gcc
-      AMD64_LINUX_CLANG: amd64-linux-clang
-      AMD64_WINDOWS_MINGW: amd64-windows-mingw
-      AMD64_MACOSX_GCC: amd64-macosx-gcc
-      ARM64_MACOSX_GCC: arm64-macosx-gcc
-      AMD64_FREEBSD_GCC: amd64-freebsd-gcc
-      ARTIFACT_DIR: .artifacts
-      ARTIFACT_RETENTION_DAYS: 5
+    outputs:
+      TAG: ${{ steps.tag.outputs.TAG || '0.3.6' }}
 
     steps:
-    - name: Get tag if tagged/released and set TAG env var
+    - name: Set TAG on release
       if: startsWith(github.ref, 'refs/tags/v')
+      id: tag
       shell: bash
       run: |
         TAG="$GITHUB_REF_NAME"
@@ -44,8 +32,77 @@ jobs:
           TAG="${TAG:1}"
         fi
         echo "TAG: $TAG"
-        echo "TAG=$TAG" >> "$GITHUB_ENV"
+        echo "TAG=$TAG" >> "$GITHUB_OUTPUT"
 
+  clang-format:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Run clang-format
+      run: |
+        sudo ln -sf /usr/bin/clang-format-15 /usr/bin/clang-format
+        ./scripts/ci-run-clang-format.sh
+
+  cppcheck:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Install cppcheck
+      run: |
+        sudo apt update
+        sudo apt install -y cppcheck
+        cppcheck --version
+
+    - name: Run cppcheck
+      run: ./scripts/ci-run-cppcheck.sh
+
+    - name: Upload (${{ env.CPPCHECK_XML_ARTIFACT_NAME }})
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.CPPCHECK_XML_ARTIFACT_NAME }}
+        path: ${{ env.CPPCHECK_XML_ARTIFACT_NAME }}
+        retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+        if-no-files-found: error
+
+    - name: Upload (${{ env.CPPCHECK_HTML_ARTIFACT_NAME }})
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.CPPCHECK_HTML_ARTIFACT_NAME }}
+        path: ${{ env.CPPCHECK_HTML_ARTIFACT_NAME }}
+        retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+        if-no-files-found: error
+
+  ci:
+    needs: [tag, clang-format, cppcheck]
+
+    strategy:
+      matrix:
+        os: [ubuntu-20.04, macos-13, macos-14]
+
+    runs-on: ${{ matrix.os }}
+
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+
+    env:
+      TAG: ${{ needs.tag.outputs.TAG }}
+      AMD64_LINUX_GCC: amd64-linux-gcc
+      AMD64_LINUX_CLANG: amd64-linux-clang
+      AMD64_WINDOWS_MINGW: amd64-windows-mingw
+      AMD64_MACOSX_GCC: amd64-macosx-gcc
+      ARM64_MACOSX_GCC: arm64-macosx-gcc
+      AMD64_FREEBSD_GCC: amd64-freebsd-gcc
+      ARTIFACT_DIR: .artifacts
+
+    steps:
     - name: Checkout
       uses: actions/checkout@v4
 
@@ -59,14 +116,14 @@ jobs:
     - name: Set up macOS (AMD64 and ARM64)
       if: runner.os == 'macOS'
       run: |
-        brew install coreutils tree autoconf automake libtool gcc@11
+        brew install --quiet coreutils tree autoconf automake libtool
         brew uninstall jq
 
     # --- Build ---
 
     - name: Build on Linux (${{ env.AMD64_FREEBSD_GCC }})
       if: runner.os == 'Linux'
-      uses: cross-platform-actions/action@v0.23.0
+      uses: cross-platform-actions/action@v0.25.0
       env:
         PREFIX: ${{ env.AMD64_FREEBSD_GCC }}
         CC: gcc
@@ -127,10 +184,10 @@ jobs:
         ./scripts/ci-create-nuget-package.sh
 
     - name: Build on macOS (${{ env.AMD64_MACOSX_GCC }})
-      if: matrix.os == 'macos-12'
+      if: matrix.os == 'macos-13'
       env:
         PREFIX: ${{ env.AMD64_MACOSX_GCC }}
-        CC: gcc-11
+        CC: gcc-13
         MAKE: make
         RUN_TESTS: false
       shell: bash
@@ -142,7 +199,7 @@ jobs:
       if: matrix.os == 'macos-14'
       env:
         PREFIX: ${{ env.ARM64_MACOSX_GCC }}
-        CC: gcc-11
+        CC: gcc-13
         MAKE: make
         RUN_TESTS: false
       shell: bash
@@ -154,6 +211,21 @@ jobs:
 
     - name: Prepare build artifacts for upload
       run: ./scripts/ci-prepare-artifacts-for-upload.sh
+
+    - name: Attest build artifacts
+      uses: actions/attest-build-provenance@v1
+      with:
+        subject-path: ${{ env.ARTIFACT_DIR }}/*
+
+    - name: Verify attested artifacts
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        for ARTIFACT in "$ARTIFACT_DIR"/*; do
+          echo "[INF] Verifying artifact... [$ARTIFACT]"
+          gh attestation verify "$ARTIFACT" --repo "$GITHUB_REPOSITORY"
+          echo "[INF] Verified successfully! [$ARTIFACT]"
+        done
 
     - name: Upload (zsv-${{ env.TAG }}-${{ env.AMD64_LINUX_GCC }}.zip)
       if: runner.os == 'Linux'
@@ -244,7 +316,7 @@ jobs:
         if-no-files-found: error
 
     - name: Upload (zsv-${{ env.TAG }}-${{ env.AMD64_MACOSX_GCC }}.zip)
-      if: matrix.os == 'macos-12'
+      if: matrix.os == 'macos-13'
       uses: actions/upload-artifact@v4
       env:
         ARTIFACT_NAME: zsv-${{ env.TAG }}-${{ env.AMD64_MACOSX_GCC }}.zip
@@ -310,7 +382,7 @@ jobs:
         if-no-files-found: error
 
     - name: Upload (zsv-${{ env.TAG }}-${{ env.AMD64_MACOSX_GCC }}.tar.gz)
-      if: matrix.os == 'macos-12'
+      if: matrix.os == 'macos-13'
       uses: actions/upload-artifact@v4
       env:
         ARTIFACT_NAME: zsv-${{ env.TAG }}-${{ env.AMD64_MACOSX_GCC }}.tar.gz
@@ -358,7 +430,7 @@ jobs:
     # --- Update homebrew tap ---
 
     - name: Update homebrew tap (liquidaty/homebrew-zsv)
-      if: ${{ startsWith(github.ref, 'refs/tags/v') && matrix.os == 'macos-12' }}
+      if: ${{ startsWith(github.ref, 'refs/tags/v') && matrix.os == 'macos-13' }}
       env:
         HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
         TAG: ${{ env.TAG }}
