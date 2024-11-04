@@ -19,6 +19,9 @@ jobs:
 
     runs-on: ${{ matrix.os }}
 
+    permissions:
+      contents: write
+
     env:
       TAG: "0.3.6"
       AMD64_LINUX_GCC: amd64-linux-gcc
@@ -56,7 +59,7 @@ jobs:
     - name: Set up macOS (AMD64 and ARM64)
       if: runner.os == 'macOS'
       run: |
-        brew install coreutils tree autoconf automake libtool
+        brew install coreutils tree autoconf automake libtool gcc@11
         brew uninstall jq
 
     # --- Build ---
@@ -342,7 +345,7 @@ jobs:
     # --- Upload release artifacts ---
 
     - name: Upload release artifacts
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v2
       if: startsWith(github.ref, 'refs/tags/v')
       with:
         files: |

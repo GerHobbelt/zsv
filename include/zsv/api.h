@@ -41,6 +41,9 @@
  * - zsv_delete(): dispose the parser
  ******************************************************************************/
 
+ZSV_EXPORT
+int zsv_peek(zsv_parser);
+
 /**
  * Create a zsv parser. Typically, passed options will at least include a
  * a `row_handler()` callback. Many, but not all, options can be subsequently
@@ -257,6 +260,11 @@ ZSV_EXPORT size_t zsv_scanned_length(zsv_parser);
  * @return cumulative number of bytes scanned across all requests by this parser
  */
 ZSV_EXPORT size_t zsv_cum_scanned_length(zsv_parser parser);
+
+/**
+ * @return number of raw bytes scanned from the beginning to the end of this row
+ */
+ZSV_EXPORT size_t zsv_row_length_raw_bytes(zsv_parser parser);
 
 /**
  * Check the quoted status of the last cell that was read. This function is only
