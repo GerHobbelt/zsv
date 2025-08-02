@@ -8,6 +8,7 @@
 
 #include <zsv/utils/writer.h>
 #include <zsv/utils/compiler.h>
+#include <zsv/utils/os.h>
 #include <stdio.h>
 #include <ctype.h>
 #include <string.h>
@@ -108,6 +109,7 @@ struct zsv_output_buff {
   size_t (*write)(const void *restrict, size_t size, size_t nitems, void *restrict stream);
   void *stream;
   size_t used;
+  uint64_t written;
   unsigned char close_on_delete : 1;
   unsigned char _ : 7;
 };
@@ -123,6 +125,12 @@ struct zsv_writer_data {
 
   const char *cell_prepend;
 
+  void (*on_row)(void *);
+  void *on_row_ctx;
+
+  void (*on_delete)(void *);
+  void *on_delete_ctx;
+
   unsigned char with_bom : 1;
   unsigned char started : 1;
   unsigned char _ : 6;
@@ -132,6 +140,7 @@ struct zsv_writer_data {
 
 static inline void zsv_output_buff_flush(struct zsv_output_buff *b) {
   b->write(b->buff, b->used, 1, b->stream);
+  b->written += b->used;
   b->used = 0;
 }
 
@@ -141,6 +150,7 @@ static inline void zsv_output_buff_write(struct zsv_output_buff *b, const unsign
       zsv_output_buff_flush(b);
       if (n > ZSV_OUTPUT_BUFF_SIZE) { // n too big, so write directly
         b->write(s, n, 1, b->stream);
+        b->written += n;
         return;
       }
     }
@@ -182,7 +192,7 @@ zsv_csv_writer zsv_writer_new(struct zsv_csv_writer_options *opts) {
       w->out.stream = stdout;
     } else {
       if (opts->output_path) {
-        if (!(w->out.stream = fopen(opts->output_path, "wb"))) {
+        if (!(w->out.stream = zsv_fopen(opts->output_path, "wb"))) {
           perror(opts->output_path);
           goto zsv_writer_new_err;
         }
@@ -199,6 +209,10 @@ zsv_csv_writer zsv_writer_new(struct zsv_csv_writer_options *opts) {
       w->with_bom = opts->with_bom;
       w->table_init = opts->table_init;
       w->table_init_ctx = opts->table_init_ctx;
+      w->on_row = opts->on_row;
+      w->on_row_ctx = opts->on_row_ctx;
+      w->on_delete = opts->on_delete;
+      w->on_delete_ctx = opts->on_delete_ctx;
     }
   }
   return w;
@@ -223,17 +237,21 @@ enum zsv_writer_status zsv_writer_delete(zsv_csv_writer w) {
   if (!w)
     return zsv_writer_status_missing_handle;
 
+  if (w->started)
+    zsv_output_buff_write(&w->out, (const unsigned char *)"\n", 1);
+
   if (w->out.stream && w->out.write && w->out.buff)
     zsv_output_buff_flush(&w->out);
 
-  if (w->started)
-    w->out.write("\n", 1, 1, w->out.stream);
+  if (w->on_delete)
+    w->on_delete(w->on_delete_ctx);
 
   if (w->out.buff)
     free(w->out.buff);
 
   if (w->out.close_on_delete && w->out.stream)
     fclose(w->out.stream);
+
   free(w);
   return zsv_writer_status_ok;
 }
@@ -256,6 +274,10 @@ static inline enum zsv_writer_status zsv_writer_cell_aux(zsv_csv_writer w, const
   return zsv_writer_status_ok;
 }
 
+uint64_t zsv_writer_cum_bytes_written(zsv_csv_writer w) {
+  return (uint64_t)(w->out.used + w->out.written);
+}
+
 enum zsv_writer_status zsv_writer_cell(zsv_csv_writer w, char new_row, const unsigned char *s, size_t len,
                                        char check_if_needs_quoting) {
   if (!w)
@@ -266,16 +288,20 @@ enum zsv_writer_status zsv_writer_cell(zsv_csv_writer w, char new_row, const uns
     if (w->with_bom)
       zsv_output_buff_write(&w->out, (const unsigned char *)"\xef\xbb\xbf", 3);
     w->started = 1;
-  } else if (new_row)
+  } else if (new_row) {
+    if (VERY_UNLIKELY(w->on_row != NULL))
+      w->on_row(w->on_row_ctx);
     zsv_output_buff_write(&w->out, (const unsigned char *)"\n", 1);
-  else
+  } else
     zsv_output_buff_write(&w->out, (const unsigned char *)",", 1);
 
   if (VERY_UNLIKELY(w->cell_prepend && *w->cell_prepend)) {
     char *tmp = NULL;
     asprintf(&tmp, "%s%.*s", w->cell_prepend, (int)len, s ? s : (const unsigned char *)"");
-    if (!tmp)
-      return zsv_writer_status_error; // zsv_writer_status_memory;
+    if (!tmp) {
+      perror(NULL);
+      return zsv_writer_status_error;
+    }
     s = (const unsigned char *)tmp;
     len = len + strlen(w->cell_prepend);
     enum zsv_writer_status stat = zsv_writer_cell_aux(w, s, len, 1);

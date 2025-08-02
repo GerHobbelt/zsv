@@ -15,7 +15,9 @@
 #include <zsv/utils/string.h>
 #include <zsv/utils/dirs.h>
 #include <zsv/utils/signal.h>
+#ifdef ZSV_EXTRAS
 #include <zsv/utils/overwrite.h>
+#endif
 #include <zsv.h>
 #include <zsv/ext.h>
 #include "cli_internal.h"
@@ -92,7 +94,9 @@ ZSV_MAIN_DECL(compare);
 ZSV_MAIN_DECL(sheet);
 #endif
 ZSV_MAIN_DECL(echo);
+#ifdef ZSV_EXTRAS
 ZSV_MAIN_DECL(overwrite);
+#endif
 ZSV_MAIN_NO_OPTIONS_DECL(prop);
 ZSV_MAIN_NO_OPTIONS_DECL(rm);
 ZSV_MAIN_NO_OPTIONS_DECL(mv);
@@ -138,7 +142,9 @@ struct builtin_cmd builtin_cmds[] = {
   CLI_BUILTIN_COMMANDEXT(sheet),
 #endif
   CLI_BUILTIN_COMMAND(echo),
+#ifdef ZSV_EXTRAS
   CLI_BUILTIN_COMMAND(overwrite),
+#endif
   CLI_BUILTIN_NO_OPTIONS_COMMAND(prop),
   CLI_BUILTIN_NO_OPTIONS_COMMAND(rm),
   CLI_BUILTIN_NO_OPTIONS_COMMAND(mv),
@@ -408,6 +414,7 @@ static struct zsv_ext_callbacks *zsv_ext_callbacks_init(struct zsv_ext_callbacks
     e->ext_sheet_buffer_set_ctx = zsvsheet_buffer_set_ctx;
     e->ext_sheet_buffer_get_ctx = zsvsheet_buffer_get_ctx;
     e->ext_sheet_buffer_set_cell_attrs = zsvsheet_buffer_set_cell_attrs;
+    e->ext_sheet_cell_profile_attrs = zsvsheet_cell_profile_attrs;
     e->ext_sheet_buffer_get_zsv_opts = zsvsheet_buffer_get_zsv_opts;
     e->ext_sheet_buffer_on_newline = zsvsheet_buffer_on_newline;
     e->ext_sheet_buffer_get_selected_cell = zsvsheet_buffer_get_selected_cell;
@@ -748,7 +755,11 @@ static struct zsv_ext *zsv_ext_new(const char *dl_name, const char *id, char ver
     }
   }
   if (!h)
+#if defined(WIN32) || defined(_WIN32)
     fprintf(stderr, "Library %s not found\n", dl_name);
+#else
+    fprintf(stderr, "Library %s failed to load: %s\n", dl_name, dlerror());
+#endif
 
   // run zsv_ext_init to add to our extension list, even if it's invalid
   tmp.ok = !zsv_ext_init(h, dl_name, &tmp);
