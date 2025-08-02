@@ -38,6 +38,13 @@
 *.log
 *.mk
 *.mk.log
+*.emcc
+*.emcc.log
+*.wasm
+*.worker.js
+package.json
+package-lock.json
+node_modules
 *.c.in
 *.h.in
 *.zip
@@ -60,3 +67,10 @@ nuget-feed
 homebrew-zsv
 cppcheck*
 tmp
+include/zsv.h
+app/test/worldcitiespop_mil.csv
+data/quoted5.csv
+data/loans_2.csv
+data/.zsv/data/loans_2.csv/overwrite.sqlite3
+compile_commands.json
+.cache

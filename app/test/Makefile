@@ -45,10 +45,17 @@ BUILD_DIR=${THIS_LIB_BASE}/build/${BUILD_SUBDIR}/${CCBN}
 TMP_DIR=${THIS_LIB_BASE}/tmp
 TEST_DATA_DIR=${THIS_LIB_BASE}/data
 
-SOURCES= echo count count-pull select select-pull sql 2json serialize flatten pretty desc stack 2db 2tsv jq compare
+SOURCES=echo count count-pull select select-pull sql 2json serialize flatten pretty desc stack 2db 2tsv jq compare overwrite
 TARGETS=$(addprefix ${BUILD_DIR}/bin/zsv_,$(addsuffix ${EXE},${SOURCES}))
 
-TESTS=test-blank-leading-rows $(addprefix test-,${SOURCES}) test-rm test-mv test-2json-help
+TESTS=test-blank-leading-rows $(addprefix test-,${SOURCES}) test-rm test-mv test-2json-help test-sheet test-paste
+
+ifeq ($(ZSV_BUILD_SHEET),1)
+  SOURCES+=sheet
+  CFLAGS+=-DZSV_BUILD_SHEET
+  CFLAGS+=${CFLAGS_NCURSES}
+  LDFLAGS+=${LDFLAGS_NCURSES}
+endif
 
 COLOR_NONE=\033[0m
 COLOR_GREEN=\033[1;32m
@@ -77,11 +84,12 @@ else
   CMP=cmp
 endif
 
+MAKE_BIN=$(notdir ${MAKE})
 
 help:
-	@echo "To run all tests: make test [LEAKS=1]"
-	@echo "To run individual test: make test-xxx"
-	@echo "To run on cli: make CLI"
+	@echo "To run all tests: ${MAKE_BIN} test [LEAKS=1]"
+	@echo "To run individual test: ${MAKE_BIN} test-xxx"
+	@echo "To run on cli: ${MAKE_BIN} CLI"
 	@echo "  where xxx can be: blank-leading-rows ${SOURCES}"
 
 clean:
@@ -89,18 +97,26 @@ clean:
 
 CLI:
 	@echo "Testing CLI..."
-	@make CLI1=1 test -n | sed 's/\/[^ ]*\/bin\/zsv_/zsv /g' | sh
+	@${MAKE} CLI1=1 test -n | sed 's/\/[^ ]*\/bin\/zsv_/zsv /g' | sh
 
 test: ${TESTS}
+
+test-paste:
+	@echo "TO DO: test paste"
 
 .SECONDARY: worldcitiespop_mil.csv
 
 .PHONY: help test test-% test-stack clean
 
 test-prop:
-	EXE=${BUILD_DIR}/bin/zsv_prop${EXE} make -C prop test
+	EXE=${BUILD_DIR}/bin/zsv_prop${EXE} ${MAKE} -C prop test
 
-test-echo : test-echo1 test-echo-overwrite test-echo-eol test-echo-overwrite-csv test-echo-chars test-echo-trim test-echo-skip-until test-echo-contiguous test-echo-trim-columns test-echo-trim-columns-2 test-echo-buffsize
+test-overwrite: ${BUILD_DIR}/bin/zsv_overwrite${EXE} ${BUILD_DIR}/bin/zsv_echo${EXE}
+	EXE=${BUILD_DIR}/bin/zsv_overwrite${EXE} ECHO_EXE=${BUILD_DIR}/bin/zsv_echo${EXE} CMP=$(CMP) ${MAKE} -C overwrite test
+
+test-echo : test-echo1 test-echo-overwrite-all test-echo-eol test-echo-chars test-echo-trim test-echo-skip-until test-echo-contiguous test-echo-trim-columns test-echo-trim-columns-2 test-echo-buffsize
+
+test-echo-overwrite-all: test-echo-overwrite test-echo-overwrite-csv test-echo-overwrite-auto
 
 test-echo-buffsize: ${BUILD_DIR}/bin/zsv_echo${EXE} ${TEST_DATA_DIR}/bigger-than-buff.csv
 	@${TEST_INIT}
@@ -153,6 +169,19 @@ test-echo-overwrite: ${BUILD_DIR}/bin/zsv_echo${EXE}
 	@${TEST_INIT}
 	@${PREFIX} $< ${TEST_DATA_DIR}/loans_1.csv --overwrite 'sqlite3://${TEST_DATA_DIR}/loans_1-overwrite.db?sql=select row,col,value from overwrites order by row,col' ${REDIRECT} ${TMP_DIR}/$@.out
 	@${CMP} ${TMP_DIR}/$@.out expected/$@.out && ${TEST_PASS} || ${TEST_FAIL}
+
+test-echo-overwrite-auto: ${BUILD_DIR}/bin/zsv_echo${EXE}
+	@${TEST_INIT}
+	@rm -f ${TEST_DATA_DIR}/.zsv/data/loans_2.csv/overwrite.sqlite3
+	@cp -p ${TEST_DATA_DIR}/loans_1.csv ${TEST_DATA_DIR}/loans_2.csv
+	@${PREFIX} $< ${TEST_DATA_DIR}/loans_2.csv ${REDIRECT} ${TMP_DIR}/$@-before.out
+	@${CMP} ${TMP_DIR}/$@-before.out expected/$@-before.out && ${TEST_PASS} || ${TEST_FAIL}
+	@mkdir -p ${TEST_DATA_DIR}/.zsv/data/loans_2.csv
+	@sqlite3 ${TEST_DATA_DIR}/.zsv/data/loans_2.csv/overwrite.sqlite3 < ${TEST_DATA_DIR}/loans_2_overwrite.sql
+	@${PREFIX} $< ${TEST_DATA_DIR}/loans_2.csv ${REDIRECT} ${TMP_DIR}/$@-after-ignored.out
+	@${CMP} ${TMP_DIR}/$@-after-ignored.out expected/$@-after-ignored.out && ${TEST_PASS} || ${TEST_FAIL}
+	@${PREFIX} $< ${TEST_DATA_DIR}/loans_2.csv --apply-overwrites ${REDIRECT} ${TMP_DIR}/$@-after-applied.out
+	@${CMP} ${TMP_DIR}/$@-after-applied.out expected/$@-after-applied.out && ${TEST_PASS} || ${TEST_FAIL}
 
 test-echo-overwrite-csv: ${BUILD_DIR}/bin/zsv_echo${EXE} ${TEST_DATA_DIR}/loans_1-overwrite.csv
 	@${TEST_INIT}
@@ -309,7 +338,6 @@ test-mv: ${BUILD_DIR}/bin/zsv_prop${EXE} ${BUILD_DIR}/bin/zsv_mv${EXE}
 	@${PREFIX} ${BUILD_DIR}/bin/zsv_mv${EXE} ${TMP_DIR}/$@.csv ${TMP_DIR}/$@-moved.csv ${REDIRECT} /dev/null
 	@find ${TMP_DIR}/.zsv/data/$@-moved.csv/props.json -type f >/dev/null && ${TEST_PASS} || ${TEST_FAIL}
 
-
 test-blank-leading-rows: test-blank-leading-rows-1 test-blank-leading-rows-2 test-blank-leading-rows-3 test-blank-leading-rows-4
 
 test-blank-leading-rows-1: ${BUILD_DIR}/bin/zsv_select${EXE}
@@ -369,12 +397,17 @@ test-pretty-escape-chars: ${BUILD_DIR}/bin/zsv_pretty${EXE}
 	@(${PREFIX} $< ${ARGS-$*} < ${TEST_DATA_DIR}/test/pretty-escape.csv -M ${REDIRECT1} ${TMP_DIR}/$@.out && \
 	${CMP} ${TMP_DIR}/$@.out expected/$@.out && ${TEST_PASS} || ${TEST_FAIL})
 
-test-2tsv: test-2tsv-1 test-2tsv-2
+test-2tsv: test-2tsv-1 test-2tsv-2 test-2tsv-3
 
 test-2tsv-1 test-2tsv-2: test-% : ${BUILD_DIR}/bin/zsv_2tsv${EXE}
 	@${TEST_INIT}
 	@( ( ! [ -s "${TEST_DATA_DIR}/test/$*.csv" ] ) && echo "No test input for 2tsv" && exit 1) || \
 	(${PREFIX} $< ${ARGS-$*} < ${TEST_DATA_DIR}/test/$*.csv ${REDIRECT1} ${TMP_DIR}/$@.out && \
+	${CMP} ${TMP_DIR}/$@.out expected/$@.out && ${TEST_PASS} || ${TEST_FAIL})
+
+test-2tsv-3: ${BUILD_DIR}/bin/zsv_2tsv${EXE}
+	@${TEST_INIT}
+	@(${PREFIX} $< --convert-to-space < ${TEST_DATA_DIR}/test/2tsv-2.csv ${REDIRECT1} ${TMP_DIR}/$@.out && \
 	${CMP} ${TMP_DIR}/$@.out expected/$@.out && ${TEST_PASS} || ${TEST_FAIL})
 
 ${THIS_MAKEFILE_DIR}/../../data/quoted5.csv: ${THIS_MAKEFILE_DIR}/../../data/quoted5.csv.bz2
@@ -396,7 +429,6 @@ test-serialize-position-id: ${BUILD_DIR}/bin/zsv_serialize${EXE} ${TEST_DATA_DIR
 	@${TEST_INIT}
 	@(${PREFIX} $< --id-column 3 < ${TEST_DATA_DIR}/test/serialize.csv -a 'Interest Paid Through Date' -a 'original INTEREST Only Term' ${REDIRECT1} ${TMP_DIR}/$@.out && \
 	${CMP} ${TMP_DIR}/$@.out expected/$@.out && ${TEST_PASS} || ${TEST_FAIL})
-
 
 test-serialize : test-%: ${BUILD_DIR}/bin/zsv_%${EXE} test-serialize-quoted test-serialize-additional test-serialize-position-id
 	@${TEST_INIT}
@@ -433,9 +465,8 @@ test-sql5: ${BUILD_DIR}/bin/zsv_sql${EXE} # test blank rows
 	@(${PREFIX} $< /tmp/1.csv 'select * from data' ${REDIRECT1} ${TMP_DIR}/$@.out)
 	@${CMP} ${TMP_DIR}/$@.out expected/$@.out && ${TEST_PASS} || ${TEST_FAIL}
 
-
 ${BUILD_DIR}/bin/zsv_%${EXE}:
-	make -C .. $@ CONFIGFILE=${CONFIGFILEPATH} DEBUG=${DEBUG}
+	${MAKE} -C .. $@ CONFIGFILE=${CONFIGFILEPATH} DEBUG=${DEBUG}
 
 test-2db: test-%: ${BUILD_DIR}/bin/zsv_%${EXE} worldcitiespop_mil.csv ${BUILD_DIR}/bin/zsv_2json${EXE} ${BUILD_DIR}/bin/zsv_select${EXE}
 	@${TEST_INIT}
@@ -513,7 +544,6 @@ test-compare-tolerance: ${BUILD_DIR}/bin/zsv_compare${EXE}
 	@(${PREFIX} $< --tolerance 0.00001 ../../data/compare/tolerance1.csv ../../data/compare/tolerance2.csv ${REDIRECT1} ${TMP_DIR}/$@.out4 && \
 	${CMP} ${TMP_DIR}/$@.out4 expected/$@.out4 && ${TEST_PASS} || ${TEST_FAIL})
 
-
 test-compare: test-%: ${BUILD_DIR}/bin/zsv_%${EXE}
 	@${TEST_INIT}
 	@(${PREFIX} $< compare/t1.csv compare/t2.csv compare/t3.csv ${REDIRECT1} ${TMP_DIR}/$@.out && \
@@ -549,3 +579,108 @@ test-compare: test-%: ${BUILD_DIR}/bin/zsv_%${EXE}
 	@(${PREFIX} $< ../../data/compare/t1.csv ../../data/compare/t2.csv --add AccentCity --sort -k country -k city ${REDIRECT1} ${TMP_DIR}/$@.out10 && \
 	${CMP} ${TMP_DIR}/$@.out10 expected/$@.out10 && ${TEST_PASS} || ${TEST_FAIL})
 
+test-sheet: test-%: ${BUILD_DIR}/bin/zsv_%${EXE} worldcitiespop_mil.csv test-sheet-cleanup test-sheet-all
+
+test-sheet-cleanup:
+	@rm -f tmux-*.log
+
+test-sheet-all: test-sheet-1 test-sheet-2 test-sheet-3 test-sheet-4 test-sheet-5 test-sheet-6 test-sheet-7 test-sheet-8 test-sheet-9
+	@(for SESSION in $^; do ! tmux kill-session -t "$$SESSION" 2>/dev/null; done && ${TEST_PASS} || ${TEST_FAIL})
+
+TMUX_TERM=xterm-256color
+test-sheet-1: ${BUILD_DIR}/bin/zsv_sheet${EXE}
+#	For this first sheet test, separate new-session from the command so that if it fails we get better logging
+	@${TEST_INIT}
+	@tmux kill-session 2>/dev/null >/dev/null || printf ''
+	@echo 'set-option default-terminal "${TMUX_TERM}"' > ~/.tmux.conf
+	@(tmux -v new-session -x 80 -y 5 -d -s $@ && \
+	sleep 0.5 && \
+	tmux send-keys -t $@ "${PREFIX} $< worldcitiespop_mil.csv" ENTER && \
+	sleep 0.5 && \
+	tmux -v capture-pane -t $@ -p ${REDIRECT1} ${TMP_DIR}/$@.out && \
+	tmux -v send-keys -t $@ "q" && \
+	${CMP} ${TMP_DIR}/$@.out expected/$@.out && ${TEST_PASS} || (for x in `ls tmux-*.log` ; do echo "Log $$x:" && cat $$x ; done && ${TEST_FAIL}))
+
+test-sheet-2: ${BUILD_DIR}/bin/zsv_sheet${EXE}
+	@${TEST_INIT}
+	@(tmux new-session -x 80 -y 5 -d -s $@ "${PREFIX} $< worldcitiespop_mil.csv" && \
+	sleep 0.5 && \
+	tmux send-keys -t $@ "C-d" && \
+	tmux capture-pane -t $@ -p ${REDIRECT1} ${TMP_DIR}/$@.out && \
+	tmux send-keys -t $@ "q" && \
+	${CMP} ${TMP_DIR}/$@.out expected/$@.out && ${TEST_PASS} || ${TEST_FAIL})
+
+test-sheet-3: ${BUILD_DIR}/bin/zsv_sheet${EXE}
+	@${TEST_INIT}
+	@(tmux new-session -x 80 -y 5 -d -s $@ "${PREFIX} $< worldcitiespop_mil.csv" && \
+	sleep 0.5 && \
+	tmux send-keys -t $@ "f" "sarmaj" Enter && \
+	sleep 2 && \
+	tmux capture-pane -t $@ -p ${REDIRECT1} ${TMP_DIR}/$@.out && \
+	tmux send-keys -t $@ "q" && \
+	${CMP} ${TMP_DIR}/$@.out expected/$@.out && ${TEST_PASS} || ${TEST_FAIL})
+
+test-sheet-4: ${BUILD_DIR}/bin/zsv_sheet${EXE}
+	@${TEST_INIT}
+	@(tmux new-session -x 80 -y 5 -d -s $@ "${PREFIX} $< worldcitiespop_mil.csv" && \
+	sleep 0.5 && \
+	tmux send-keys -t $@ "C-d" "C-d" "C-u" && \
+	tmux capture-pane -t $@ -p ${REDIRECT1} ${TMP_DIR}/$@.out && \
+	tmux send-keys -t $@ "q" && \
+	${CMP} ${TMP_DIR}/$@.out expected/$@.out && ${TEST_PASS} || ${TEST_FAIL})
+
+test-sheet-5: ${BUILD_DIR}/bin/zsv_sheet${EXE}
+	@${TEST_INIT}
+	@echo 'set-option default-terminal "${TMUX_TERM}"' > ~/.tmux.conf
+	@(tmux new-session -x 160 -y 5 -d -s $@ "${PREFIX} $< worldcitiespop_mil.csv" && \
+	sleep 0.5 && \
+	tmux capture-pane -t $@ -p ${REDIRECT1} ${TMP_DIR}/$@.out && \
+	tmux send-keys -t $@ "q" && \
+	${CMP} ${TMP_DIR}/$@.out expected/$@.out && ${TEST_PASS} || ${TEST_FAIL})
+
+test-sheet-6: ${BUILD_DIR}/bin/zsv_sheet${EXE}
+	@${TEST_INIT}
+	@echo 'set-option default-terminal "${TMUX_TERM}"' > ~/.tmux.conf
+	@(tmux new-session -x 80 -y 50 -d -s $@ "${PREFIX} $< -d 3 ${TEST_DATA_DIR}/test/mixed-line-endings.csv" && \
+	sleep 0.5 && \
+	tmux send-keys -t $@ "G" "C-u" "C-u" "C-u" && \
+	sleep 0.5 && \
+	tmux capture-pane -t $@ -p ${REDIRECT1} ${TMP_DIR}/$@.out && \
+	tmux send-keys -t $@ "q" && \
+	${CMP} ${TMP_DIR}/$@.out expected/$@.out && ${TEST_PASS} || ${TEST_FAIL})
+
+test-sheet-7: ${BUILD_DIR}/bin/zsv_sheet${EXE}
+	@${TEST_INIT}
+	@echo 'set-option default-terminal "${TMUX_TERM}"' > ~/.tmux.conf
+	@(tmux new-session -x 80 -y 5 -d -s $@ "${PREFIX} $< -d 3 ${TEST_DATA_DIR}/test/mixed-line-endings.csv" && \
+	sleep 0.5 && \
+	tmux send-keys -t $@ "G" "g" "g" "C-u" "/" "1234" "Enter" && \
+	sleep 0.5 && \
+	tmux capture-pane -t $@ -p ${REDIRECT1} ${TMP_DIR}/$@.out && \
+	tmux send-keys -t $@ "q" && \
+	${CMP} ${TMP_DIR}/$@.out expected/$@.out && ${TEST_PASS} || (echo 'Incorrect output:' && cat ${TMP_DIR}/$@.out && ${TEST_FAIL}))
+
+test-sheet-8: ${BUILD_DIR}/bin/zsv_sheet${EXE}
+	@${TEST_INIT}
+	@echo 'set-option default-terminal "${TMUX_TERM}"' > ~/.tmux.conf
+	@(tmux new-session -x 160 -y 5 -d -s $@ "${PREFIX} $< worldcitiespop_mil.csv" && \
+	sleep 0.5 && \
+	tmux send-keys -t $@ "f" "e" "Enter" && \
+	sleep 0.5 && \
+	tmux send-keys -t $@ "G" "C-u" "k" && \
+	sleep 0.5 && \
+	tmux capture-pane -t $@ -p ${REDIRECT1} ${TMP_DIR}/$@.out && \
+	tmux send-keys -t $@ "q" && \
+	${CMP} ${TMP_DIR}/$@.out expected/$@.out && ${TEST_PASS} || (echo 'Incorrect output:' && cat ${TMP_DIR}/$@.out && ${TEST_FAIL}))
+
+test-sheet-9: ${BUILD_DIR}/bin/zsv_sheet${EXE}
+	@${TEST_INIT}
+	@echo 'set-option default-terminal "${TMUX_TERM}"' > ~/.tmux.conf
+	@(tmux new-session -x 80 -y 6 -d -s $@ "${PREFIX} $< -d 3 ${TEST_DATA_DIR}/test/mixed-line-endings.csv" && \
+	sleep 0.5 && \
+	tmux send-keys -t $@ "G" && \
+	tmux send-keys -t $@ -N 4096 "k" && \
+	sleep 2 && \
+	tmux capture-pane -t $@ -p ${REDIRECT1} ${TMP_DIR}/$@.out && \
+	tmux send-keys -t $@ "q" && \
+	${CMP} ${TMP_DIR}/$@.out expected/$@.out && ${TEST_PASS} || (echo 'Incorrect output:' && cat ${TMP_DIR}/$@.out && ${TEST_FAIL}))

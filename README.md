@@ -24,10 +24,13 @@ generic-delimited and fixed-width formats, as well as multi-row-span headers
 The ZSV CLI can be compiled to virtually any target, including
 [WebAssembly](examples/js), and offers features including `select`, `count`,
 direct CSV `sql`, `flatten`, `serialize`, `2json` conversion, `2db` sqlite3
-conversion, `stack`, `pretty`, `2tsv`, `compare`, `paste` and more.
+conversion, `stack`, `pretty`, `2tsv`, `compare`, `paste`, `overwrite` and more.
 
-The ZSV CLI also includes `sheet`, an in-console interactive grid viewer
-that can be extended with your custom code for manipulating and viewing data.
+The ZSV CLI also includes `sheet`, an in-console interactive grid viewer (TO DO:
+that can be extended with your custom code for manipulating and) for viewing
+data:
+
+<img src="https://github.com/user-attachments/assets/c2ae32a3-48c4-499d-8ef7-7748687bd24f" width="50%">
 
 Pre-built CLI packages are available via `brew` and `nuget`.
 
@@ -99,7 +102,8 @@ that implements the expected
 - Includes the `zsv` CLI with the following built-in commands:
   - `sheet`, an in-console interactive and extendable grid viewer
   - `select`, `count`, `sql` query, `desc`ribe, `flatten`, `serialize`, `2json`,
-    `2db`, `stack`, `pretty`, `2tsv`, `paste`, `compare`, `jq`, `prop`, `rm`
+    `2db`, `stack`, `pretty`, `2tsv`, `paste`, `compare`, `overwrite`,
+    `jq`, `prop`, `rm`
   - easily [convert between CSV/JSON/sqlite3](docs/csv_json_sqlite.md)
   - [compare multiple files](docs/compare.md)
 - CLI is easy to extend/customize with a few lines of code via modular plug-in
@@ -116,6 +120,11 @@ the [Releases](https://github.com/liquidaty/zsv/releases) page.
 You can also download pre-built binaries and packages from
 [Actions](https://github.com/liquidaty/zsv/actions) for the latest commits and
 PRs but these are retained only for limited days.
+
+> [!IMPORTANT]
+>
+> For [musl libc](https://www.musl-libc.org/) static build, the dynamic
+> extensions are not supported!
 
 > [!NOTE]
 >
@@ -204,6 +213,39 @@ Please note:
 - If you'd like to use additional parser features, or use the CLI as a Node
   package, please feel free to post a request in an issue here.
 
+#### GHCR (GitHub Container Registry)
+
+`zsv` CLI is also available as a container image from
+[Packages](https://github.com/liquidaty?tab=packages).
+
+The container image is published on every release. In addition to the specific
+release tag, the image is also tagged as `latest` i.e. `zsv:latest` always
+points the latest released version.
+
+Example:
+
+```shell
+$ docker pull ghcr.io/liquidaty/zsv
+# ...
+$ cat worldcitiespop_mil.csv | docker run -i ghcr.io/liquidaty/zsv count
+1000000
+```
+
+For image details, see [Dockerfile](./Dockerfile). You may use this as a
+baseline for your own use cases as needed.
+
+#### GitHub Actions
+
+In a GitHub Actions workflow, you can use [`zsv/setup-action`](./setup-action)
+to set up zsv+zsvlib:
+
+```yml
+- name: Set up zsv+zsvlib
+  uses: liquidaty/zsv/setup-action@main
+```
+
+See [zsv/setup-action/README](./setup-action/README.md) for more details.
+
 ### From source
 
 See [BUILD.md](BUILD.md) for more details.
@@ -219,7 +261,7 @@ Our objectives, which we were unable to find in a pre-existing project, are:
 - Memory-efficient, configurable resource limits
 - Handles real-world CSV cases the same way that Excel does, including all edge
   cases (quote handling, newline handling (either `\n` or `\r`), embedded
-  newlines, abnormal quoting (e.g. aaa"aaa,bbb...)
+  newlines, abnormal quoting e.g. aaa"aaa,bbb...)
 - Handles other "dirty" data issues:
   - Assumes valid UTF8, but does not misbehave if input contains bad UTF8
   - Option to specify multi-row headers
@@ -267,8 +309,8 @@ needs.
 - `2tsv`: convert to TSV (tab-delimited) format
 - `compare`: compare two or more tables of data and output the differences
 - `paste` (alpha): horizontally paste two tables together (given inputs X and Y,
-   output 1...N rows where each row all columns of X in row N, followed by all
-   columns of Y in row N)
+   output 1...N rows where each row contains the entire corresponding
+   row in X followed by the entire corresponding row in Y)
 - `serialize` (inverse of flatten): convert an NxM table to a single 3x (Nx(M-1))
   table with columns: Row, Column Name, Column Value
 - `flatten` (inverse of serialize): flatten a table by combining rows that share
@@ -276,6 +318,8 @@ needs.
 - `stack`: merge CSV files vertically
 - `jq`: run a `jq` filter
 - `2db`: [convert from JSON to sqlite3 db](docs/csv_json_sqlite.md)
+- `overwrite`: overwrite a cell value; changes will be reflected in any zsv
+  command when the --apply-overwrites option is specified
 - `prop`: view or save parsing options associated with a file, such as initial
   rows to ignore, or header row span. Saved options are be applied by default
   when processing that file.
@@ -300,10 +344,10 @@ Pull parsing:
 
 ```c
 zsv_parser parser = zsv_new(...);
-while(zsv_next_row(parser) == zsv_status_row) { // for each row
+while (zsv_next_row(parser) == zsv_status_row) { // for each row
   // ...
   size_t cell_count = zsv_cell_count(parser);
-  for(size_t i = 0; i < cell_count; i++) { // for each cell
+  for (size_t i = 0; i < cell_count; i++) { // for each cell
     struct zsv_cell c = zsv_get_cell(parser, i);
     fprintf(stderr, "Cell: %.*s\n", c.len, c.str);
     // ...
@@ -317,7 +361,7 @@ Push parsing:
 static void my_row_handler(void *ctx) {
   zsv_parser p = ctx;
   size_t cell_count = zsv_cell_count(p);
-  for(size_t i = 0, j = zsv_cell_count(p); i < j; i++) {
+  for (size_t i = 0, j = zsv_cell_count(p); i < j; i++) {
     // ...
   }
 }
@@ -326,7 +370,7 @@ int main(void) {
   zsv_parser p = zsv_new(NULL);
   zsv_set_row_handler(p, my_row_handler);
   zsv_set_context(p, p);
-  while(zsv_parse_more(data.parser) == zsv_status_ok);
+  while (zsv_parse_more(data.parser) == zsv_status_ok);
   return 0;
 }
 ```
@@ -386,7 +430,7 @@ helping, please post an issue.
   branch.
 - Create a feature or bugfix branch from `main`.
 - Update your required changes.
-- Make sure to run `clang-format` (version 14 or later) for C source updates.
+- Make sure to run `clang-format` (version 15 or later) for C source updates.
 - Commit and push your changes.
 - Submit the PR.
 

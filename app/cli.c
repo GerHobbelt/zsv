@@ -15,11 +15,18 @@
 #include <zsv/utils/string.h>
 #include <zsv/utils/dirs.h>
 #include <zsv/utils/signal.h>
+#include <zsv/utils/overwrite.h>
 #include <zsv.h>
 #include <zsv/ext.h>
 #include "cli_internal.h"
 #include "cli_const.h"
 #include "cli_export.h"
+#ifdef ZSVSHEET_BUILD
+#include "sheet/sheet_internal.h"
+#include "sheet/handlers_internal.h"
+#endif
+#include "sheet/procedure.h"
+#include "sheet/key-bindings.h"
 
 struct cli_config {
   struct zsv_ext *extensions;
@@ -29,6 +36,9 @@ struct cli_config {
 };
 
 static struct zsv_ext *zsv_ext_new(const char *dl_name, const char *id, char verbose);
+
+zsvsheet_status zsvsheet_ext_prompt(struct zsvsheet_proc_context *ctx, char *buffer, size_t bufsz, const char *fmt,
+                                    ...);
 
 #include "cli_ini.c"
 
@@ -43,6 +53,7 @@ struct builtin_cmd {
   zsv_cmd *cmd;
 };
 
+static int config_init(struct cli_config *c, char err_if_dl_not_found, char do_init, char verbose);
 #include "zsv_main.h"
 
 #define CLI_BUILTIN_DECL(x) int main_##x(int argc, const char *argv[])
@@ -69,10 +80,11 @@ ZSV_MAIN_DECL(desc);
 ZSV_MAIN_DECL(sql);
 ZSV_MAIN_DECL(2db);
 ZSV_MAIN_DECL(compare);
-#ifdef ZSV_BUILD_SHEET
+#ifdef ZSVSHEET_BUILD
 ZSV_MAIN_DECL(sheet);
 #endif
 ZSV_MAIN_DECL(echo);
+ZSV_MAIN_DECL(overwrite);
 ZSV_MAIN_NO_OPTIONS_DECL(prop);
 ZSV_MAIN_NO_OPTIONS_DECL(rm);
 ZSV_MAIN_NO_OPTIONS_DECL(mv);
@@ -81,14 +93,16 @@ ZSV_MAIN_NO_OPTIONS_DECL(mv);
 ZSV_MAIN_NO_OPTIONS_DECL(jq);
 #endif
 
-#define CLI_BUILTIN_CMD(x)                                                                                             \
-  { .name = #x, .main = main_##x, .cmd = NULL }
-#define CLI_BUILTIN_COMMAND(x)                                                                                         \
-  { .name = #x, .main = NULL, .cmd = ZSV_MAIN_FUNC(x) }
-#define CLI_BUILTIN_NO_OPTIONS_COMMAND(x)                                                                              \
-  { .name = #x, .main = ZSV_MAIN_NO_OPTIONS_FUNC(x), .cmd = NULL }
-
 // clang-format off
+
+#define CLI_BUILTIN_CMD(x) {.name = #x, .main = main_##x, .cmd = NULL}
+#define CLI_BUILTIN_COMMAND(x) {.name = #x, .main = NULL, .cmd = ZSV_MAIN_FUNC(x)}
+#define CLI_BUILTIN_COMMANDEXT(x) {.name = #x, .main = NULL, .cmd = ZSV_MAINEXT_FUNC(x)}
+#define CLI_BUILTIN_NO_OPTIONS_COMMAND(x) {.name = #x, .main = ZSV_MAIN_NO_OPTIONS_FUNC(x), .cmd = NULL}
+
+#ifdef ZSVSHEET_BUILD
+ZSV_MAINEXT_FUNC_DEFINE(sheet);
+#endif
 
 struct builtin_cmd builtin_cmds[] = {
   CLI_BUILTIN_CMD(license),
@@ -111,10 +125,11 @@ struct builtin_cmd builtin_cmds[] = {
   CLI_BUILTIN_COMMAND(sql),
   CLI_BUILTIN_COMMAND(2db),
   CLI_BUILTIN_COMMAND(compare),
-#ifdef ZSV_BUILD_SHEET
-CLI_BUILTIN_COMMAND(sheet),
+#ifdef ZSVSHEET_BUILD
+  CLI_BUILTIN_COMMANDEXT(sheet),
 #endif
   CLI_BUILTIN_COMMAND(echo),
+  CLI_BUILTIN_COMMAND(overwrite),
   CLI_BUILTIN_NO_OPTIONS_COMMAND(prop),
   CLI_BUILTIN_NO_OPTIONS_COMMAND(rm),
   CLI_BUILTIN_NO_OPTIONS_COMMAND(mv),
@@ -133,6 +148,8 @@ struct zsv_execution_data {
   const char **argv;
   char opts_used[ZSV_OPTS_SIZE_MAX];
   void *custom_context; // user-defined
+  void *state;          // program state relevant to the handler, e.g. cursor
+                        // position in zsv sheet.
 };
 
 static const char *ext_opts_used(zsv_execution_context ctx) {
@@ -181,6 +198,16 @@ static void *ext_get_context(zsv_execution_context ctx) {
   return d->custom_context;
 }
 
+static void ext_set_state(zsv_execution_context ctx, void *state) {
+  struct zsv_execution_data *d = ctx;
+  d->state = state;
+}
+
+static void *ext_get_state(zsv_execution_context ctx) {
+  struct zsv_execution_data *d = ctx;
+  return d->state;
+}
+
 static void ext_set_parser(zsv_execution_context ctx, zsv_parser parser) {
   struct zsv_execution_data *d = ctx;
   d->parser = parser;
@@ -218,6 +245,8 @@ static char *zsv_ext_errmsg(enum zsv_ext_status stat, zsv_execution_context ctx)
       return s;
     }
     // use zsv_ext_status_other for silent errors. will not attempt to call errcode() or errstr()
+  case zsv_ext_status_not_permitted:
+    return strdup("Not permitted");
   case zsv_ext_status_other:
     // use zsv_ext_status_err for custom errors. will attempt to call errcode() and errstr()
     // for custom error code and message (if not errcode or errstr not provided, will be silent)
@@ -242,8 +271,7 @@ static int handle_ext_err(struct zsv_ext *ext, zsv_execution_context ctx, enum z
       if (ext->module.errfree)
         ext->module.errfree(errstr);
     }
-  } else
-    fprintf(stderr, "An unknown error occurred in extension %s\n", ext->id);
+  }
   return rc;
 }
 
@@ -356,6 +384,22 @@ static struct zsv_ext_callbacks *zsv_ext_callbacks_init(struct zsv_ext_callbacks
     e->ext_parse_all = ext_parse_all;
     e->ext_parser_opts = ext_parser_opts;
     e->ext_opts_used = ext_opts_used;
+
+#ifdef ZSVSHEET_BUILD
+    e->ext_sheet_keypress = zsvsheet_ext_keypress;
+    e->ext_sheet_prompt = zsvsheet_ext_prompt;
+    e->ext_sheet_buffer_set_ctx = zsvsheet_buffer_set_ctx;
+    e->ext_sheet_buffer_get_ctx = zsvsheet_buffer_get_ctx;
+    e->ext_sheet_buffer_get_zsv_opts = zsvsheet_buffer_get_zsv_opts;
+    e->ext_sheet_set_status = zsvsheet_set_status;
+    e->ext_sheet_buffer_current = zsvsheet_buffer_current;
+    e->ext_sheet_buffer_prior = zsvsheet_buffer_prior;
+    e->ext_sheet_buffer_filename = zsvsheet_buffer_filename;
+    e->ext_sheet_buffer_data_filename = zsvsheet_buffer_data_filename;
+    e->ext_sheet_open_file = zsvsheet_open_file;
+    e->ext_sheet_register_proc = zsvsheet_register_proc;
+    e->ext_sheet_register_proc_key_binding = zsvsheet_register_proc_key_binding;
+#endif
   }
   return e;
 }
@@ -413,12 +457,12 @@ static enum zsv_ext_status run_extension(int argc, const char *argv[], struct zs
     }
 
     struct zsv_execution_data ctx = {0};
-
     if ((stat = execution_context_init(&ctx, argc, argv)) == zsv_ext_status_ok) {
       struct zsv_opts opts;
-      zsv_args_to_opts(argc, argv, &argc, argv, &opts, ctx.opts_used);
+      zsv_args_to_opts(argc, argv, &ctx.argc, ctx.argv, &opts, ctx.opts_used);
       zsv_set_default_opts(opts);
       // need a corresponding zsv_set_default_custom_prop_handler?
+
       stat = cmd->main(&ctx, ctx.argc - 1, &ctx.argv[1], &opts, ctx.opts_used);
     }
 

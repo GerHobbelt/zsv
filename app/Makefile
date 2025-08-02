@@ -3,18 +3,22 @@
 THIS_MAKEFILE_DIR:=$(shell dirname $(realpath $(lastword $(MAKEFILE_LIST))))
 
 CONFIGFILE ?= ../config.mk
-ifneq ($(CONFIGFILE),)
-  ifeq ($(shell realpath `dirname ${CONFIGFILE}`),`realpath .`)
-    $(error howdydy)
+$(info Using config file ${CONFIGFILE})
+
+CONFIGFILEPATH:=$(shell ls ${CONFIGFILE} >/dev/null 2>/dev/null && realpath ${CONFIGFILE})
+ifeq ($(CONFIGFILEPATH),)
+  ifeq ($(shell dirname ${CONFIGFILE}),.)
+    CONFIGFILEPATH:=$(shell ls ../${CONFIGFILE} >/dev/null 2>/dev/null && realpath ../${CONFIGFILE})
+    ifneq ($(CONFIGFILEPATH),)
+      $(info Config file ${CONFIGFILE} not found; using ../${CONFIGFILE})
+    endif
   endif
 endif
 
-$(info Using config file ${CONFIGFILE})
-include ${CONFIGFILE}
-
-CONFIGFILEPATH=$(shell ls ${CONFIGFILE} >/dev/null 2>/dev/null && realpath ${CONFIGFILE})
 ifeq ($(CONFIGFILEPATH),)
   $(error Config file ${CONFIGFILE} not found)
+else
+  include ${CONFIGFILEPATH}
 endif
 
 CC ?= cc
@@ -150,7 +154,7 @@ CFLAGS+= -I${PREFIX}/include
 THIS_LIB_BASE=$(shell cd .. && pwd)
 INCLUDE_DIR=${THIS_LIB_BASE}/include
 BUILD_DIR=${THIS_LIB_BASE}/build/${BUILD_SUBDIR}/${CCBN}
-UTILS1=writer file err signal mem clock arg dl string dirs prop cache jq os
+UTILS1=writer file err signal mem clock arg dl string dirs prop cache jq os overwrite index
 
 ZSV_EXTRAS ?=
 
@@ -184,13 +188,13 @@ endif
 
 ZSV=$(BINDIR)/zsv${EXE}
 
-SOURCES= echo paste count count-pull select select-pull 2tsv 2json serialize flatten pretty stack desc sql 2db compare prop rm mv jq
-CLI_SOURCES=echo select desc count paste 2tsv pretty sql flatten 2json serialize stack 2db compare prop rm mv jq
+SOURCES=echo paste count count-pull select select-pull 2tsv 2json serialize flatten pretty stack desc sql 2db compare prop rm mv jq overwrite
+CLI_SOURCES=echo select desc count paste 2tsv pretty sql flatten 2json serialize stack 2db compare prop rm mv jq overwrite
 
-ifeq ($(ZSV_BUILD_SHEET),1)
+ifeq ($(ZSVSHEET_BUILD),1)
   SOURCES+=sheet
   CLI_SOURCES+=sheet
-  CFLAGS+=-DZSV_BUILD_SHEET
+  CFLAGS+=-DZSVSHEET_BUILD
   CFLAGS+=${CFLAGS_NCURSES}
   LDFLAGS+=${LDFLAGS_NCURSES}
 endif
@@ -198,8 +202,12 @@ endif
 CFLAGS+= -DUSE_JQ
 
 STATIC_LIB_FLAGS=
-ifneq ($(STATIC_LIBS),)
+ifeq ($(STATIC_BUILD),1)
   STATIC_LIB_FLAGS=${LDFLAGS_STATIC}
+else
+  ifneq ($(STATIC_LIBS),)
+    STATIC_LIB_FLAGS=${LDFLAGS_STATIC}
+  endif
 endif
 
 STANDALONE_PFX=${BUILD_DIR}/bin/zsv_
@@ -237,12 +245,11 @@ YAJL_INCLUDE=-I${YAJL_SRC_DIR}/build/yajl-2.1.1/include
 
 YAJL_HELPER_OBJ=${BUILD_DIR}-external/yajl_helper/yajl_helper.o
 YAJL_HELPER_INCLUDE=-I${THIS_MAKEFILE_DIR}/external/yajl_helper
-# YAJL_HELPER_INCLUDE=-I${THIS_MAKEFILE_DIR}/external
 CFLAGS+=${YAJL_HELPER_INCLUDE} ${YAJL_INCLUDE}
 
 # jq
-JQ_TARBALL=${THIS_MAKEFILE_DIR}/external/jq-1.6.tar.bz2
-JQ_SRC=${BUILD_DIR}/external/jq-src
+JQ_TARBALL=${THIS_MAKEFILE_DIR}/external/jq-1.6.tar.gz
+JQ_SRC=${BUILD_DIR}-external/jq-src
 
 JQ_PREFIX ?=
 ifeq ($(JQ_PREFIX),)
@@ -271,22 +278,23 @@ SQLITE_SRC=${THIS_MAKEFILE_DIR}/external/sqlite3/sqlite3*.c
 SQLITE_EXT=${BUILD_DIR}-external/sqlite3/sqlite3_and_csv_vtab.o
 SQLITE_EXT_INCLUDE=-I${THIS_MAKEFILE_DIR}/external/sqlite3
 
-# everything uses prop, which in turn uses yajl and jq and json
-OBJECTS+= ${YAJL_OBJ} ${YAJL_HELPER_OBJ} ${BUILD_DIR}/objs/utils/json.o
-MORE_SOURCE+= ${YAJL_INCLUDE} ${YAJL_HELPER_INCLUDE} -I${JQ_INCLUDE_DIR}
+# everything uses prop, which in turn uses yajl and jq and json and sqlite3
+OBJECTS+= ${YAJL_OBJ} ${YAJL_HELPER_OBJ} ${BUILD_DIR}/objs/utils/json.o ${SQLITE_EXT}
+MORE_SOURCE+= ${YAJL_INCLUDE} ${YAJL_HELPER_INCLUDE} -I${JQ_INCLUDE_DIR} ${SQLITE_EXT_INCLUDE}
 MORE_LIBS+=${JQ_LIB} ${LDFLAGS_JQ}
 
 help:
-	@echo "To build: ${MAKE} [DEBUG=1] [clean] [clean-all] [BINDIR=${BINDIR}] [JQ_PREFIX=/usr/local] <install|all|install-util-lib|test>"
+	@echo "To build: ${MAKE} [DEBUG=1] [STATIC_BUILD=1] [clean] [clean-all] [BINDIR=${BINDIR}] [JQ_PREFIX=/usr/local] <install|all|install-util-lib|test>"
 	@echo
 	@echo "If JQ_PREFIX is not defined, libjq will be built in the build dir"
+	@echo "If STATIC_BUILD is set to 1, will build with -static flag, if the compiler supports it"
 	@echo
 	@echo "To build and test individual apps, run:"
 	@echo "  ${MAKE} test"
 	@echo "which will build and test all apps, or to build/test a single app:"
 	@echo "  ${MAKE} test-xx"
 	@echo "where xx is any of:"
-	@echo "  echo count count-pull paste select select-pull 2tsv 2json serialize flatten pretty stack desc sql 2db prop rm mv"
+	@echo "  echo count count-pull paste select select-pull 2tsv 2json serialize flatten pretty stack desc sql 2db prop rm mv overwrite"
 	@echo ""
 
 install: ${ZSV}
@@ -376,7 +384,7 @@ ${INIH_OBJECT}: ${INIH_SRC}/ini.c
 ${CLI_APP_OBJECT} : cli_ini.c builtin/*.c ${JQ_LIB}
 ${CLI_APP_OBJECT} ${CLI_OBJECTS}: ${CLI_OBJ_PFX}%.o: %.c ${UTF8PROC_SRC}/utf8proc.c # ${MORE_OBJECTS}
 	@mkdir -p `dirname "$@"`
-	${CC} ${CFLAGS} -DVERSION=\"${VERSION}\" -DZSV_CLI ${CLI_INCLUDE} -I${THIS_MAKEFILE_DIR}/external/sglib -I${INCLUDE_DIR} -c $< -o $@ ${MORE_SOURCE}
+	${CC} ${CFLAGS} -DVERSION=\"${VERSION}\" -DZSV_CLI ${CLI_INCLUDE} -I${THIS_MAKEFILE_DIR}/external/sglib -I${INCLUDE_DIR} -I${UTF8PROC_INCLUDE} -c $< -o $@ ${MORE_SOURCE}
 
 ${CLI}: cli_internal.c.in cli_internal.h cli_internal.h.in ${CLI_APP_OBJECT} ${CLI_OBJECTS} ${OBJECTS} ${UTF8PROC_OBJECT} cli_ini.c ${INIH_OBJECT} ${LIBZSV_INSTALL} ${MORE_OBJECTS}
 	@mkdir -p `dirname "$@"`
@@ -404,7 +412,12 @@ lib-jq: ${JQ_LIB}
 	@echo "Using jq library ${JQ_LIB}"
 
 ${JQ_BUNDLE_LIB}: ${JQ_SRC} # -D_REENTRANT needed for clang to not break
-	cd ${JQ_SRC} \
+	@if [ -e ${JQ_SRC}-conf ]; then \
+		rm -rf ${JQ_SRC}-conf; \
+	fi
+	# copy the directory because its timestamp gets updated after libjq is built
+	@cp -a ${JQ_SRC} ${JQ_SRC}-conf
+	cd ${JQ_SRC}-conf \
 	&& CC="${CC}" CFLAGS="${CFLAGS} -D_REENTRANT" ./configure \
 	    --prefix="${JQ_PREFIX}" \
 	    --disable-maintainer-mode \
@@ -420,14 +433,8 @@ ${JSONWRITER_OBJECT}: ${JSONWRITER_SRC}/jsonwriter.c
 	@mkdir -p `dirname "$@"`
 	${CC} ${CFLAGS} ${JSONWRITER_INCLUDE} -DINCLUDE_UTILS $< -c -o $@
 
-# flatten stack desc use sglib
-# ${STANDALONE_PFX}flatten${EXE} ${STANDALONE_PFX}stack${EXE} ${STANDALONE_PFX}desc${EXE}:
+# sglib
 MORE_SOURCE+=-I${THIS_MAKEFILE_DIR}/external/sglib
-
-# sql, 2db, 2json, echo, compare use sqlite3
-${CLI} ${STANDALONE_PFX}sql${EXE} ${STANDALONE_PFX}2db${EXE} ${STANDALONE_PFX}2json${EXE} ${STANDALONE_PFX}echo${EXE} ${STANDALONE_PFX}compare${EXE}: ${SQLITE_EXT}
-${CLI} ${STANDALONE_PFX}sql${EXE} ${STANDALONE_PFX}2db${EXE} ${STANDALONE_PFX}2json${EXE} ${STANDALONE_PFX}echo${EXE} ${STANDALONE_PFX}compare${EXE}: MORE_OBJECTS+=${SQLITE_EXT}
-${STANDALONE_PFX}sql${EXE} ${CLI_OBJ_PFX}sql.o ${STANDALONE_PFX}2db${EXE} ${CLI_OBJ_PFX}2db.o ${STANDALONE_PFX}2json${EXE} ${CLI_OBJ_PFX}2json.o ${STANDALONE_PFX}echo${EXE} ${CLI_OBJ_PFX}echo.o ${CLI_OBJ_PFX}compare.o: MORE_SOURCE+=${SQLITE_EXT_INCLUDE}
 
 # 2json, desc, compare use jsonwriter
 ${CLI} ${STANDALONE_PFX}2json${EXE} ${STANDALONE_PFX}desc${EXE} ${STANDALONE_PFX}compare${EXE}: ${JSONWRITER_OBJECT}
@@ -450,7 +457,7 @@ ${STANDALONE_PFX}%${EXE}: %.c ${OBJECTS} ${MORE_OBJECTS} ${LIBZSV_INSTALL} ${UTF
 
 ${BUILD_DIR}-external/sqlite3/sqlite3_and_csv_vtab.o: ${BUILD_DIR}-external/%.o : external/%.c
 	@mkdir -p `dirname "$@"`
-	${CC} ${CFLAGS} -I${INCLUDE_DIR} -o $@ -c $<
+	${CC} ${CFLAGS} -I${INCLUDE_DIR} ${YAJL_INCLUDE} ${YAJL_HELPER_INCLUDE} -o $@ -c $<
 
 ${YAJL_OBJ}: ${BUILD_DIR}-external/yajl/%.o : external/yajl/src/%.c
 	@mkdir -p `dirname "$@"`
@@ -460,12 +467,15 @@ ${YAJL_HELPER_OBJ}: external/yajl_helper/yajl_helper.c
 	@mkdir -p `dirname "$@"`
 	${CC} ${CFLAGS} ${YAJL_INCLUDE} ${YAJL_HELPER_INCLUDE} -c $< -o $@
 
-check test:	test-standalone test-cli
+check test:	test-standalone test-cli test-shared-lib
+
+test-shared-lib:
+	@echo "TO DO: create tests for using shared library"
 
 test-standalone:
 	@${MAKE} -C test test QUIET=1 LEAKS=${LEAKS} CONFIGFILE=${CONFIGFILEPATH} DEBUG=${DEBUG}
 
-test-cli:  ${CLI}
+test-cli: ${CLI}
 	@${MAKE} -C test $@ QUIET=1 LEAKS=${LEAKS} CONFIGFILE=${CONFIGFILEPATH} DEBUG=${DEBUG} CLI=${CLI}
 
 clean-all: clean clean-external clean-obj clean-lib clean-util-lib
@@ -479,7 +489,7 @@ clean-util-lib:
 clean-lib:
 	@rm -rf ${BUILD_DIR}-external
 
-clean: clean-obj
+clean: clean-obj clean-internal
 	rm -rf ${BUILD_DIR}
 	${MAKE} -C test clean CONFIGFILE=${CONFIGFILEPATH} DEBUG=${DEBUG}
 
@@ -487,6 +497,9 @@ clean-obj:
 	rm -rf ${BUILD_DIR}/bin ${INIH_OBJECT} ${JSONWRITER_OBJECT} ${UTF8PROC_OBJECT}
 	rm -rf external/utf8proc-2.6.1
 
+clean-internal:
+	$(RM) cli_internal.c.in cli_internal.h.in
+
 ${UTF8PROC_SRC}/utf8proc.c ${UTF8PROC_SRC}/utf8proc.h: ${THIS_MAKEFILE_DIR}/external/utf8proc-2.6.1.tar.gz
-	@cd external && tar xf $< && chown -R `whoami` utf8proc-2.6.1
+	@cd external && tar xf utf8proc-2.6.1.tar.gz && chown -R `whoami` utf8proc-2.6.1
 	@touch $@

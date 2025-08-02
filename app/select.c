@@ -24,6 +24,7 @@
 #include <zsv/utils/utf8.h>
 #include <zsv/utils/string.h>
 #include <zsv/utils/mem.h>
+#include <zsv/utils/memmem.h>
 #include <zsv/utils/arg.h>
 
 struct zsv_select_search_str {
@@ -786,9 +787,8 @@ int ZSV_MAIN_FUNC(ZSV_COMMAND)(int argc, const char *argv[], struct zsv_opts *op
           if (*s == ',')
             data.fixed.count++;
         free(data.fixed.offsets);
-        data.fixed.offsets = NULL; // unnecessary line to silence codeQL false positive
         data.fixed.offsets = calloc(data.fixed.count, sizeof(*data.fixed.offsets));
-        if (!data.fixed.offsets) {
+        if (data.fixed.offsets == NULL) {
           stat = zsv_printerr(1, "Out of memory!\n");
           break;
         }

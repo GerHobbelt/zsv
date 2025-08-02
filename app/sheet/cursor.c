@@ -1,14 +1,14 @@
-static size_t input_offset_top() {
+static size_t input_offset_top(void) {
   return 0;
 }
 
-static size_t input_offset_bottom(struct input_dimensions *input_dims,
+static size_t input_offset_bottom(struct zsvsheet_input_dimensions *input_dims,
                                   size_t buffer_row_count // number of rows in the buffer, w/o regard to header
 ) {
   return input_dims->row_count - buffer_row_count;
 }
 
-static size_t input_offset_centered(struct input_dimensions *input_dims,
+static size_t input_offset_centered(struct zsvsheet_input_dimensions *input_dims,
                                     size_t buffer_row_count, // number of rows in the buffer, w/o regard to header
                                     size_t target_raw_ix     // raw row index starting at zero, w/o regard to header
 ) {
@@ -22,7 +22,7 @@ static size_t input_offset_centered(struct input_dimensions *input_dims,
   return target_raw_ix - buffer_half_row_count;
 }
 
-// ztv_goto_input_raw_row
+// zsvsheet_goto_input_raw_row
 // return non-zero if buffer must be reloaded
 /*
       ------- INPUT
@@ -40,8 +40,9 @@ ioff->3  |
       -------
  */
 
-static void set_window_to_cursor(struct ztv_rowcol *buff_offset, size_t target_raw_row, struct ztv_rowcol *input_offset,
-                                 size_t input_header_span, struct display_dims *ddims, size_t cursor_row) {
+static void set_window_to_cursor(struct zsvsheet_rowcol *buff_offset, size_t target_raw_row,
+                                 struct zsvsheet_rowcol *input_offset, size_t input_header_span,
+                                 struct zsvsheet_display_dimensions *ddims, size_t cursor_row) {
   // assume that input_offset->row is fixed; set buff_offset->row
   if (target_raw_row + ddims->header_span >= input_offset->row + cursor_row + input_header_span)
     buff_offset->row = target_raw_row - input_offset->row - cursor_row + ddims->header_span - input_header_span;
@@ -49,14 +50,20 @@ static void set_window_to_cursor(struct ztv_rowcol *buff_offset, size_t target_r
     buff_offset->row = 0;
 }
 
-static int ztv_goto_input_raw_row(size_t input_raw_num, size_t input_header_span, struct ztv_rowcol *input_offset,
-                                  struct ztv_rowcol *buff_offset, struct input_dimensions *input_dims,
-                                  size_t *cursor_rowp, struct display_dims *ddims, size_t final_cursor_position) {
+static int zsvsheet_goto_input_raw_row(struct zsvsheet_ui_buffer *uib, size_t input_raw_num, size_t input_header_span,
+                                       struct zsvsheet_display_dimensions *ddims, size_t final_cursor_position) {
+  zsvsheet_screen_buffer_t buffer = uib->buffer;
+  struct zsvsheet_rowcol *input_offset = &uib->input_offset;
+  struct zsvsheet_rowcol *buff_offset = &uib->buff_offset;
+  struct zsvsheet_input_dimensions *input_dims = &uib->dimensions;
+  size_t *cursor_rowp = &uib->cursor_row;
+
+  size_t buffer_rows = zsvsheet_screen_buffer_rows(buffer);
   int update_buffer = 0;
-  if (input_raw_num < input_offset->row                          // move the buffer up
-      || input_raw_num + input_header_span + 1 > ZTV_BUFFER_ROWS // move the buffer down
+  if (input_raw_num < input_offset->row + input_header_span                      // move the buffer up
+      || input_raw_num + input_header_span + 1 > input_offset->row + buffer_rows // move the buffer down
   ) {
-    input_offset->row = input_offset_centered(input_dims, ZTV_BUFFER_ROWS, input_raw_num);
+    input_offset->row = input_offset_centered(input_dims, buffer_rows, input_raw_num);
     update_buffer = 1;
   } else if (!(input_raw_num >= input_offset->row + buff_offset->row &&
                input_raw_num <=
@@ -65,7 +72,7 @@ static int ztv_goto_input_raw_row(size_t input_raw_num, size_t input_header_span
   } else {
     if (final_cursor_position == (size_t)-1) {
       // just move the cursor however much we needed to shift
-      size_t current = ztv_get_input_raw_row(input_offset, buff_offset, *cursor_rowp);
+      size_t current = zsvsheet_get_input_raw_row(input_offset, buff_offset, *cursor_rowp);
       final_cursor_position = *cursor_rowp + input_raw_num - current;
     }
   }
