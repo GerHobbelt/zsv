@@ -5,6 +5,7 @@ struct zsvsheet_screen_buffer {
   size_t long_cell_count;
   struct zsvsheet_screen_buffer_opts opts;
   unsigned char *data;
+  int *cell_attrs; // used for per-cell attron() and attroff()
   // to do: add hooks for extension
 };
 
@@ -56,6 +57,7 @@ void zsvsheet_screen_buffer_delete(zsvsheet_screen_buffer_t buff) {
         free_long_cell(buff, offset);
       }
     }
+    free(buff->cell_attrs);
     free(buff->data);
     free(buff);
   }
@@ -100,6 +102,39 @@ zsvsheet_screen_buffer_t zsvsheet_screen_buffer_new(size_t cols, struct zsvsheet
   return NULL;
 }
 
+enum zsvsheet_priv_status zsvsheet_screen_buffer_grow(zsvsheet_screen_buffer_t buff, size_t cols) {
+  size_t old_cols = buff->cols;
+  size_t rows = buff->opts.rows;
+  size_t cell_buff_len = buff->opts.cell_buff_len;
+  size_t old_row_len = old_cols * cell_buff_len;
+
+  if (!buff->opts.no_rownum_column)
+    cols++;
+
+  size_t row_len = cols * cell_buff_len;
+
+  assert(cols > old_cols);
+
+  void *old_data = buff->data;
+  void *data = calloc(rows, cols * cell_buff_len);
+  if (!data)
+    return zsvsheet_priv_status_memory;
+
+  for (size_t i = 0; i < rows; i++) {
+    size_t old_row_off = i * old_row_len;
+    size_t row_off = i * row_len;
+
+    memcpy((char *)data + row_off, (char *)old_data + old_row_off, old_row_len);
+  }
+
+  buff->data = data;
+  buff->cols = cols;
+
+  free(old_data);
+
+  return zsvsheet_priv_status_ok;
+}
+
 #ifndef UTF8_NOT_FIRST_CHAR
 #define UTF8_NOT_FIRST_CHAR(x) ((x & 0xC0) == 0x80)
 #endif
@@ -141,6 +176,14 @@ enum zsvsheet_priv_status zsvsheet_screen_buffer_write_cell_w_len(zsvsheet_scree
 enum zsvsheet_priv_status zsvsheet_screen_buffer_write_cell(zsvsheet_screen_buffer_t buff, size_t row, size_t col,
                                                             const unsigned char *value) {
   return zsvsheet_screen_buffer_write_cell_w_len(buff, row, col, value, strlen((void *)value));
+}
+
+int zsvsheet_screen_buffer_cell_attrs(zsvsheet_screen_buffer_t buff, size_t row, size_t col) {
+  if (buff->cell_attrs) {
+    size_t offset = row * buff->cols + col;
+    return buff->cell_attrs[offset];
+  }
+  return 0;
 }
 
 const unsigned char *zsvsheet_screen_buffer_cell_display(zsvsheet_screen_buffer_t buff, size_t row, size_t col) {

@@ -9,7 +9,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sqlite3.h>
+// #include <sqlite3.h>
+#include "external/sqlite3/sqlite3.h"
+#include "external/sqlite3/sqlite3_csv_vtab-mem.h"
 
 #define ZSV_COMMAND sql
 #include "zsv_command.h"
@@ -19,8 +21,6 @@
 #include <zsv/utils/string.h>
 
 #include <unistd.h> // unlink
-
-extern sqlite3_module CsvModule;
 
 #ifndef STRING_LIST
 #define STRING_LIST
@@ -67,6 +67,7 @@ static int zsv_sql_usage(FILE *f) {
 
 struct zsv_sql_data {
   FILE *in;
+  const char *input_filename;
   struct string_list *more_input_filenames;
   char *sql_dynamic;  // will hold contents of sql file, if any
   char *join_indexes; // will hold contents of join_indexes arg, prefixed and suffixed with a comma
@@ -103,74 +104,31 @@ static void zsv_sql_cleanup(struct zsv_sql_data *data) {
   (void)data;
 }
 
-static int create_virtual_csv_table(const char *fname, sqlite3 *db, const char *opts_used, int max_columns,
-                                    char **err_msg, int table_ix) {
-  // TO DO: set customizable maximum number of columns to prevent
-  // runaway in case no line ends found
-  char *sql = NULL;
-  char table_name_suffix[64];
-
-  if (table_ix == 0)
-    *table_name_suffix = '\0';
-  else if (table_ix < 0 || table_ix > 1000)
-    return -1;
-  else
-    snprintf(table_name_suffix, sizeof(table_name_suffix), "%i", table_ix + 1);
-
-  if (max_columns)
-    sql = sqlite3_mprintf("CREATE VIRTUAL TABLE data%s USING csv(filename=%Q,options_used=%Q,max_columns=%i)",
-                          table_name_suffix, fname, opts_used, max_columns);
-  else
-    sql = sqlite3_mprintf("CREATE VIRTUAL TABLE data%s USING csv(filename=%Q,options_used=%Q)", table_name_suffix,
-                          fname, opts_used);
-
-  int rc = sqlite3_exec(db, sql, NULL, NULL, err_msg);
-  sqlite3_free(sql);
-  return rc;
-}
-
 static char is_select_sql(const char *s) {
   return strlen(s) > strlen("select ") && !zsv_strincmp((const unsigned char *)"select ", strlen("select "),
                                                         (const unsigned char *)s, strlen("select "));
 }
 
+#include "sql_internal.c"
+
 int ZSV_MAIN_FUNC(ZSV_COMMAND)(int argc, const char *argv[], struct zsv_opts *opts,
-                               struct zsv_prop_handler *custom_prop_handler, const char *opts_used) {
+                               struct zsv_prop_handler *custom_prop_handler) {
   /**
    * We need to pass the following data to the sqlite3 virtual table code:
    * a. zsv parser options indicated in the cmd line
    * b. input file path
    * c. cmd-line options used in (a), so that we can print warnings in case of
    *    conflict between (a) and properties of (b)
-   *
-   * For file path and options_used, we will pass as part of the
-   * CREATE VIRTUAL TABLE
-   * command. For everything else, rather than having to sync all the
-   * CREATE VIRTUAL TABLE options with all the zsv options, we will just use
-   * zsv_set_default_opts() here to effectively pass the options when the sql
-   * module calls zsv_get_default_opts()
    */
   int err = 0;
   if (argc < 2 || !strcmp(argv[1], "-h") || !strcmp(argv[1], "--help"))
     err = zsv_sql_usage(argc < 2 ? stderr : stdout);
   else {
     struct zsv_sql_data data = {0};
-    int max_cols = 0; // TO DO: remove this; use parser_opts.max_columns
-    const char *input_filename = NULL;
     const char *my_sql = NULL;
     struct string_list **next_input_filename = &data.more_input_filenames;
 
-    // save current default opts so that we can restore them later
-    struct zsv_opts original_default_opts = zsv_get_default_opts();
-    struct zsv_prop_handler original_default_custom_prop_handler = zsv_get_default_custom_prop_handler();
-
-    // set parser opts that the sql module will get via zsv_get_default_opts()
-    zsv_set_default_opts(*opts);
-    if (custom_prop_handler)
-      zsv_set_default_custom_prop_handler(*custom_prop_handler);
-
     struct zsv_csv_writer_options writer_opts = zsv_writer_get_default_opts();
-    int err = 0;
     for (int arg_i = 1; !err && arg_i < argc; arg_i++) {
       const char *arg = argv[arg_i];
       if (!strcmp(arg, "--join-indexes")) {
@@ -230,28 +188,15 @@ int ZSV_MAIN_FUNC(ZSV_COMMAND)(int argc, const char *argv[], struct zsv_opts *op
             err = 1;
           }
         }
-      } else if (!strcmp(arg, "-o") || !strcmp(arg, "--output")) {
-        if (!(++arg_i < argc)) {
-          fprintf(stderr, "option %s requires a filename\n", arg);
-          err = 1;
-        } else if (!(writer_opts.stream = fopen(argv[arg_i], "wb"))) {
-          fprintf(stderr, "Could not open for writing: %s\n", argv[arg_i]);
-          err = 1;
-        }
-      } else if (!strcmp(arg, "--memory"))
+      } else if (!strcmp(arg, "-o") || !strcmp(arg, "--output"))
+        writer_opts.output_path = zsv_next_arg(++arg_i, argc, argv, &err);
+      else if (!strcmp(arg, "--memory"))
         data.in_memory = 1;
       else if (!strcmp(arg, "-b"))
         writer_opts.with_bom = 1;
-      else if (!strcmp(arg, "-C") || !strcmp(arg, "--max-cols")) {
-        if (arg_i + 1 < argc && atoi(argv[arg_i + 1]) > 0 && atoi(argv[arg_i + 1]) <= 2000)
-          max_cols = atoi(argv[++arg_i]);
-        else {
-          fprintf(stderr, "maximum columns value not provided or not between 0 and 2000\n");
-          err = 1;
-        }
-      } else if (*arg != '-') {
-        if (!input_filename) {
-          input_filename = arg;
+      else if (*arg != '-') {
+        if (!data.input_filename) {
+          data.input_filename = arg;
           if (!(data.in = fopen(arg, "rb"))) {
             fprintf(stderr, "Unable to open for reading: %s\n", arg);
             err = 1;
@@ -279,7 +224,7 @@ int ZSV_MAIN_FUNC(ZSV_COMMAND)(int argc, const char *argv[], struct zsv_opts *op
       }
     }
 
-    if (!data.in || !input_filename) {
+    if (!data.in || !data.input_filename) {
 #ifdef NO_STDIN
       fprintf(stderr, "Please specify an input file\n");
       err = 1;
@@ -295,10 +240,6 @@ int ZSV_MAIN_FUNC(ZSV_COMMAND)(int argc, const char *argv[], struct zsv_opts *op
 
     if (err) {
       zsv_sql_cleanup(&data);
-      if (custom_prop_handler) {
-        zsv_set_default_opts(original_default_opts); // restore default options
-        zsv_set_default_custom_prop_handler(original_default_custom_prop_handler);
-      }
       return 1;
     }
 
@@ -309,10 +250,10 @@ int ZSV_MAIN_FUNC(ZSV_COMMAND)(int argc, const char *argv[], struct zsv_opts *op
 
     FILE *f = NULL;
     char *tmpfn = NULL;
-    if (input_filename) {
-      f = fopen(input_filename, "rb");
+    if (data.input_filename) {
+      f = fopen(data.input_filename, "rb");
       if (!f)
-        fprintf(stderr, "Unable to open %s for reading\n", input_filename);
+        fprintf(stderr, "Unable to open %s for reading\n", data.input_filename);
     } else
       f = stdin;
 
@@ -334,182 +275,179 @@ int ZSV_MAIN_FUNC(ZSV_COMMAND)(int argc, const char *argv[], struct zsv_opts *op
       }
     }
 
-    if (f) {
+    zsv_csv_writer cw = zsv_writer_new(&writer_opts);
+    if (f && cw) {
       fclose(f); // to do: don't open in the first place
       f = NULL;
 
-      sqlite3 *db = NULL;
-      int rc;
-
-      zsv_csv_writer cw = zsv_writer_new(&writer_opts);
       unsigned char cw_buff[1024];
       zsv_writer_set_temp_buff(cw, cw_buff, sizeof(cw_buff));
 
-      char *err_msg = NULL;
-      const char *db_url = data.in_memory ? "file::memory:" : "";
-      if ((rc = sqlite3_open_v2(db_url, &db, SQLITE_OPEN_URI | SQLITE_OPEN_READWRITE, NULL)) == SQLITE_OK && db &&
-          (rc = sqlite3_create_module(db, "csv", &CsvModule, 0) == SQLITE_OK) &&
-          (rc = create_virtual_csv_table(tmpfn ? tmpfn : input_filename, db, opts_used, max_cols, &err_msg, 0)) ==
-            SQLITE_OK) {
-        int i = 1;
-        for (struct string_list *sl = data.more_input_filenames; sl; sl = sl->next)
-          if (create_virtual_csv_table(sl->value, db, opts_used, max_cols, &err_msg, i++) != SQLITE_OK)
-            rc = SQLITE_ERROR;
-      }
+      struct zsv_sqlite3_dbopts dbopts = {
+        .in_memory = data.in_memory,
+      };
+      struct zsv_sqlite3_db *zdb = zsv_sqlite3_db_new(&dbopts);
+      if (zdb && zdb->rc == SQLITE_OK) {
+        const char *csv_filename = tmpfn ? (const char *)tmpfn : data.input_filename;
 
-      if (data.join_indexes) { // get column names, and construct the sql
-        // sql template:
-        // select t1.*, t2.*, t3.* from t1 left join (select * from t2 group by a) t2 left join (select * from t3 group
-        // by a) t3 using(a);
-        sqlite3_stmt *stmt = NULL;
-        const char *prefix_search = NULL;
-        const char *prefix_end = NULL;
-        if (my_sql) {
-          prefix_search = " from data ";
-          prefix_end = strstr(my_sql, prefix_search);
-          if (!prefix_end) {
-            prefix_search = " from data";
+        // for simplicity, we assume the same opts and custom_prop_handler for every input
+        // it may be desirable later to make this customizable for each input
+        if (zsv_sqlite3_add_csv(zdb, csv_filename, opts, custom_prop_handler) == SQLITE_OK) {
+          for (struct string_list *sl = data.more_input_filenames; sl; sl = sl->next)
+            if (zsv_sqlite3_add_csv(zdb, sl->value, opts, custom_prop_handler) != SQLITE_OK)
+              break;
+        }
+
+        if (zdb->rc == SQLITE_OK && data.join_indexes) { // get column names, and construct the sql
+          // sql template:
+          // select t1.*, t2.*, t3.* from t1 left join (select * from t2 group by a) t2 left join (select * from t3
+          // group by a) t3 using(a);
+          sqlite3_stmt *stmt = NULL;
+          const char *prefix_search = NULL;
+          const char *prefix_end = NULL;
+          if (my_sql) {
+            prefix_search = " from data ";
             prefix_end = strstr(my_sql, prefix_search);
-            if (prefix_end && (prefix_end + strlen(prefix_search) != my_sql + strlen(my_sql)))
-              prefix_end = NULL;
+            if (!prefix_end) {
+              prefix_search = " from data";
+              prefix_end = strstr(my_sql, prefix_search);
+              if (prefix_end && (prefix_end + strlen(prefix_search) != my_sql + strlen(my_sql)))
+                prefix_end = NULL;
+            }
+            if (!prefix_end || !prefix_search) {
+              err = 1;
+              fprintf(stderr, "Invalid sql: must contain 'from data'");
+            }
           }
-          if (!prefix_end || !prefix_search) {
-            err = 1;
-            fprintf(stderr, "Invalid sql: must contain 'from data'");
-          }
-        }
 
-        if (!err) {
-          rc = sqlite3_prepare_v2(db, "select * from data", -1, &stmt, NULL);
-          if (rc != SQLITE_OK) {
-            fprintf(stderr, "%s:\n  %s\n (or bad CSV/utf8 input)\n\n", sqlite3_errstr(err), "select * from data");
-            err = 1;
+          if (!err) {
+            zdb->rc = sqlite3_prepare_v2(zdb->db, "select * from data", -1, &stmt, NULL);
+            if (zdb->rc != SQLITE_OK) {
+              fprintf(stderr, "%s:\n  %s\n (or bad CSV/utf8 input)\n\n", sqlite3_errstr(err), "select * from data");
+              err = 1;
+            }
           }
-        }
-        if (!err) {
-          struct string_list **next_joined_column_name = &data.join_column_names;
-          int col_count = sqlite3_column_count(stmt);
-          for (char *ix_str = data.join_indexes; !err && ix_str && *ix_str && *(++ix_str);
-               ix_str = strchr(ix_str + 1, ',')) {
-            unsigned int next_ix;
-            if (sscanf(ix_str, "%u,", &next_ix) == 1) {
-              if (next_ix == 0)
-                fprintf(stderr, "--join-indexes index must be greater than zero\n");
-              else if (next_ix > (unsigned)col_count)
-                fprintf(stderr, "Column %u out of range; input has only %i columns\n", next_ix, col_count), err = 1;
-              else if (!sqlite3_column_name(stmt, next_ix - 1))
-                fprintf(stderr, "Column %u unexpectedly missing name\n", next_ix);
-              else {
-                struct string_list *tmp = calloc(1, sizeof(**next_joined_column_name));
-                if (!tmp)
-                  fprintf(stderr, "Out of memory!\n"), err = 1;
+          if (!err && stmt) {
+            struct string_list **next_joined_column_name = &data.join_column_names;
+            int col_count = sqlite3_column_count(stmt);
+            for (char *ix_str = data.join_indexes; !err && ix_str && *ix_str && *(++ix_str);
+                 ix_str = strchr(ix_str + 1, ',')) {
+              unsigned int next_ix;
+              if (sscanf(ix_str, "%u,", &next_ix) == 1) {
+                if (next_ix == 0)
+                  fprintf(stderr, "--join-indexes index must be greater than zero\n");
+                else if (next_ix > (unsigned)col_count)
+                  fprintf(stderr, "Column %u out of range; input has only %i columns\n", next_ix, col_count), err = 1;
+                else if (!sqlite3_column_name(stmt, next_ix - 1))
+                  fprintf(stderr, "Column %u unexpectedly missing name\n", next_ix);
                 else {
-                  tmp->value = strdup(sqlite3_column_name(stmt, next_ix - 1));
-                  *next_joined_column_name = tmp;
-                  next_joined_column_name = &tmp->next;
+                  struct string_list *tmp = calloc(1, sizeof(**next_joined_column_name));
+                  if (!tmp)
+                    fprintf(stderr, "Out of memory!\n"), err = 1;
+                  else {
+                    tmp->value = strdup(sqlite3_column_name(stmt, next_ix - 1));
+                    *next_joined_column_name = tmp;
+                    next_joined_column_name = &tmp->next;
+                  }
                 }
               }
             }
+
+            if (!data.more_input_filenames)
+              fprintf(stderr, "--join-indexes requires more than one input\n"), err = 1;
+            else if (!err) { // now build the join select
+              sqlite3_str *select_clause = sqlite3_str_new(zdb->db);
+              sqlite3_str *from_clause = sqlite3_str_new(zdb->db);
+              sqlite3_str *group_by_clause = sqlite3_str_new(zdb->db);
+
+              sqlite3_str_appendf(select_clause, "data.*");
+              sqlite3_str_appendf(from_clause, "data");
+
+              for (struct string_list *sl = data.join_column_names; sl; sl = sl->next) {
+                if (sl != data.join_column_names)
+                  sqlite3_str_appendf(group_by_clause, ",");
+                sqlite3_str_appendf(group_by_clause, "\"%w\"", sl->value);
+              }
+
+              int i = 2;
+              for (struct string_list *sl = data.more_input_filenames; sl; sl = sl->next, i++) {
+                sqlite3_str_appendf(select_clause, ", data%i.*", i);
+                // left join (select * from t2 group by a) t2 using(x,...)
+                sqlite3_str_appendf(from_clause, " left join (select * from data%i group by %s) data%i", i,
+                                    sqlite3_str_value(group_by_clause), i);
+                sqlite3_str_appendf(from_clause, " using (%s)", sqlite3_str_value(group_by_clause));
+              }
+
+              if (!prefix_end || !prefix_search)
+                asprintf(&data.sql_dynamic, "select %s from %s", sqlite3_str_value(select_clause),
+                         sqlite3_str_value(from_clause));
+              else {
+                asprintf(&data.sql_dynamic, "%.*s from %s%s%s", (int)(prefix_end - my_sql), my_sql,
+                         sqlite3_str_value(from_clause), strlen(prefix_end + strlen(prefix_search)) ? " " : "",
+                         strlen(prefix_end + strlen(prefix_search)) ? prefix_end + strlen(prefix_search) : "");
+              }
+
+              my_sql = data.sql_dynamic;
+              if (opts->verbose)
+                fprintf(stderr, "Join sql:\n%s\n", my_sql);
+              sqlite3_free(sqlite3_str_finish(select_clause));
+              sqlite3_free(sqlite3_str_finish(from_clause));
+              sqlite3_free(sqlite3_str_finish(group_by_clause));
+            }
           }
-
-          if (!data.more_input_filenames)
-            fprintf(stderr, "--join-indexes requires more than one input\n"), err = 1;
-          else if (!err) { // now build the join select
-            sqlite3_str *select_clause = sqlite3_str_new(db);
-            sqlite3_str *from_clause = sqlite3_str_new(db);
-            sqlite3_str *group_by_clause = sqlite3_str_new(db);
-
-            sqlite3_str_appendf(select_clause, "data.*");
-            sqlite3_str_appendf(from_clause, "data");
-
-            for (struct string_list *sl = data.join_column_names; sl; sl = sl->next) {
-              if (sl != data.join_column_names)
-                sqlite3_str_appendf(group_by_clause, ",");
-              sqlite3_str_appendf(group_by_clause, "\"%w\"", sl->value);
-            }
-
-            int i = 2;
-            for (struct string_list *sl = data.more_input_filenames; sl; sl = sl->next, i++) {
-              sqlite3_str_appendf(select_clause, ", data%i.*", i);
-              // left join (select * from t2 group by a) t2 using(x,...)
-              sqlite3_str_appendf(from_clause, " left join (select * from data%i group by %s) data%i", i,
-                                  sqlite3_str_value(group_by_clause), i);
-              sqlite3_str_appendf(from_clause, " using (%s)", sqlite3_str_value(group_by_clause));
-            }
-
-            if (!prefix_end || !prefix_search)
-              asprintf(&data.sql_dynamic, "select %s from %s", sqlite3_str_value(select_clause),
-                       sqlite3_str_value(from_clause));
-            else {
-              asprintf(&data.sql_dynamic, "%.*s from %s%s%s", (int)(prefix_end - my_sql), my_sql,
-                       sqlite3_str_value(from_clause), strlen(prefix_end + strlen(prefix_search)) ? " " : "",
-                       strlen(prefix_end + strlen(prefix_search)) ? prefix_end + strlen(prefix_search) : "");
-            }
-
-            my_sql = data.sql_dynamic;
-            if (opts->verbose)
-              fprintf(stderr, "Join sql:\n%s\n", my_sql);
-            sqlite3_free(sqlite3_str_finish(select_clause));
-            sqlite3_free(sqlite3_str_finish(from_clause));
-            sqlite3_free(sqlite3_str_finish(group_by_clause));
-          }
+          if (stmt)
+            sqlite3_finalize(stmt);
         }
-        if (stmt)
-          sqlite3_finalize(stmt);
-      }
 
-      if (rc == SQLITE_OK && !err && my_sql) {
-        sqlite3_stmt *stmt;
-        err = sqlite3_prepare_v2(db, my_sql, -1, &stmt, NULL);
-        if (err != SQLITE_OK)
-          fprintf(stderr, "%s:\n  %s\n (or bad CSV/utf8 input)\n\n", sqlite3_errstr(err), my_sql);
-        else {
-          int col_count = sqlite3_column_count(stmt);
+        if (zdb->rc == SQLITE_OK && !err && my_sql) {
+          sqlite3_stmt *stmt;
+          err = sqlite3_prepare_v2(zdb->db, my_sql, -1, &stmt, NULL);
+          if (err != SQLITE_OK)
+            fprintf(stderr, "%s:\n  %s\n (or bad CSV/utf8 input)\n\n", sqlite3_errstr(err), my_sql);
+          else {
 
-          // write header row
-          for (int i = 0; i < col_count; i++) {
-            const char *colname = sqlite3_column_name(stmt, i);
-            zsv_writer_cell(cw, !i, (const unsigned char *)colname, colname ? strlen(colname) : 0, 1);
-          }
+            int col_count = sqlite3_column_count(stmt);
 
-          while (sqlite3_step(stmt) == SQLITE_ROW) {
+            // write header row
             for (int i = 0; i < col_count; i++) {
-              const unsigned char *text = sqlite3_column_text(stmt, i);
-              int len = text ? sqlite3_column_bytes(stmt, i) : 0;
-              zsv_writer_cell(cw, !i, text, len, 1);
+              const char *colname = sqlite3_column_name(stmt, i);
+              zsv_writer_cell(cw, !i, (const unsigned char *)colname, colname ? strlen(colname) : 0, 1);
             }
+
+            // write sql results
+            while (sqlite3_step(stmt) == SQLITE_ROW) {
+              for (int i = 0; i < col_count; i++) {
+                const unsigned char *text = sqlite3_column_text(stmt, i);
+                int len = text ? sqlite3_column_bytes(stmt, i) : 0;
+                zsv_writer_cell(cw, !i, text, len, 1);
+              }
+            }
+            sqlite3_finalize(stmt);
           }
-          sqlite3_finalize(stmt);
         }
+        err = 1;
+        if (zdb->err_msg)
+          fprintf(stderr, "Error: %s\n", zdb->err_msg);
+        else if (!zdb->db)
+          fprintf(stderr, "Error (unable to open db, code %i): %s\n", zdb->rc, sqlite3_errstr(zdb->rc));
+        else if (zdb->rc != SQLITE_OK)
+          fprintf(stderr, "Error (code %i): %s\n", zdb->rc, sqlite3_errstr(zdb->rc));
+        else
+          err = 0;
+
+        zsv_sqlite3_db_delete(zdb);
       }
-      err = 1;
-      if (err_msg) {
-        fprintf(stderr, "Error: %s\n", err_msg);
-        sqlite3_free(err_msg);
-      } else if (!db)
-        fprintf(stderr, "Error (unable to open db, code %i): %s\n", rc, sqlite3_errstr(rc));
-      else if (rc)
-        fprintf(stderr, "Error (code %i): %s\n", rc, sqlite3_errstr(rc));
-      else
-        err = 0;
-
-      if (db)
-        sqlite3_close(db);
-
-      zsv_writer_delete(cw);
     }
     if (f)
       fclose(f);
     zsv_sql_finalize(&data);
     zsv_sql_cleanup(&data);
+    zsv_writer_delete(cw);
 
     if (tmpfn) {
       unlink(tmpfn);
       free(tmpfn);
     }
-    zsv_set_default_opts(original_default_opts); // restore default options
-    if (custom_prop_handler)
-      zsv_set_default_custom_prop_handler(original_default_custom_prop_handler);
   }
   return err;
 }
