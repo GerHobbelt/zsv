@@ -172949,7 +172949,7 @@ SQLITE_PRIVATE void sqlite3Fts3EvalPhraseCleanup(Fts3Phrase *pPhrase){
 ** Return SQLITE_CORRUPT_VTAB.
 */
 #ifdef SQLITE_DEBUG
-SQLITE_PRIVATE int sqlite3Fts3Corrupt(){
+SQLITE_PRIVATE int sqlite3Fts3Corrupt(void){
   return SQLITE_CORRUPT_VTAB;
 }
 #endif
