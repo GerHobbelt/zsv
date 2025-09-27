@@ -197622,7 +197622,7 @@ static char *rbuObjIterGetIndexCols(
 
 /*
 ** Assuming the current table columns are "a", "b" and "c", and the zObj
-** paramter is passed "old", return a string of the form:
+** parameter is passed "old", return a string of the form:
 **
 **     "old.a, old.b, old.b"
 **
